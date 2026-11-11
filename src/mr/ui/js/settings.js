@@ -178,7 +178,7 @@ const getPath = (o, p) => p.split('.').reduce((x, k) => x?.[k], o);
 function setPath(o, p, v) { const ks = p.split('.'); let x = o; ks.slice(0, -1).forEach(k => { x[k] = x[k] || {}; x = x[k]; }); x[ks[ks.length - 1]] = v; }
 
 MRPages.settings = {
-  components: { Icon, ProviderDialog, ModelDialog, PromptMaker },
+  components: { Icon, ProviderDialog, ModelDialog },
   template: `
 <div class="page">
   <div class="page-head"><h1>设置</h1></div>
@@ -221,11 +221,9 @@ MRPages.settings = {
       <div class="card-body form-card" style="padding-top:4px;padding-bottom:10px">
         <div class="setting"><div><div class="k">交给外部 Agent 的环节</div><div class="help">这些环节仍要在上面选好模型：抽查和"改用模型做完"时用它。</div></div>
           <div class="ctl"><label class="check" v-for="s in store.settings.external.stages" :key="s.key"><input type="checkbox" :value="s.key" v-model="x.external_stages">{{ s.label }}</label></div><div></div></div>
-        <div class="setting"><div><div class="k">交接文件夹</div><div class="help">任务和结果文件放在这里，每个环节一个子文件夹。让 Agent 只打开它负责的那个环节的文件夹，它就接触不到归档、月报和别的环节。</div></div>
+        <div class="setting"><div><div class="k">交接文件夹</div><div class="help">估算或生成时，这些环节的任务写进这里，每个环节一个子文件夹；第一次写出任务时才建立。任务写出后，在月报页该月份的"运行"里（专题在专题页）生成提示词、复制给 Agent。</div></div>
           <div class="ctl"><input class="input grow" v-model="x.external_root" :placeholder="'留空：' + store.settings.external.default_root"><button class="btn" v-if="canPick()" @click="pickExternal"><Icon name="folder"/>选择</button>
-            <button class="btn ghost" @click="openPath(x.external_root || store.settings.external.default_root)">打开</button></div><div></div></div>
-        <div class="setting" v-if="x.external_stages.length"><div><div class="k">提示词</div><div class="help">按你要怎样分给各个 Agent 来生成。任务出现以后，月份的"运行"页上也有同样的生成器，并带着任务数。</div></div>
-          <div class="ctl" style="display:block;max-width:none"><PromptMaker :stages="makerStages"/></div><div></div></div>
+            <button class="btn ghost" v-if="store.settings.external.root_exists && x.external_root.trim() === (store.settings.settings.external_root || '')" @click="openPath(store.settings.external.root)">打开</button></div><div></div></div>
         <div class="setting"><div><div class="k">抽查比例</div><div class="help">收回结果时随机抽这个比例，让该环节的模型再做一遍来对比；外部结果漏掉要点的那些改用模型的结果，抽查情况写进报告附录。填 0 不抽查。</div></div>
           <div class="ctl"><input class="input num" type="number" min="0" max="100" style="width:90px" v-model.number="x.external_audit"><span>%</span></div><div></div></div>
         <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn" @click="loadExternal">还原</button><button class="btn primary" @click="saveExternal">保存</button></div>
@@ -389,8 +387,6 @@ MRPages.settings = {
       if (!Number.isInteger(x.value.external_audit) || x.value.external_audit < 0 || x.value.external_audit > 100) return toast('抽查比例请填 0 到 100 的整数', 'warn');
       try { await api('/api/settings', { method: 'PUT', body: { ...x.value, external_root: x.value.external_root.trim() } }); toast('已保存', 'ok'); loadExternal(); } catch (e) { fail(e); }
     }
-    // The stages ticked above, in the order the run goes through them, for the prompt maker.
-    const makerStages = computed(() => (store.settings?.external.stages || []).filter(s => x.value?.external_stages.includes(s.key)).map(s => ({ name: s.label })));
     async function pickExternal() { const p = await pickFolder(x.value.external_root || store.settings.external.default_root); if (p) x.value.external_root = p; }
     async function setFallback(i, name) {
       const models = m.value.fallback.models.slice();
@@ -490,6 +486,6 @@ MRPages.settings = {
     return { tab, m, dlg, probes, g, adv, budgetOn, budgetM, diag, allProbes, probing, store, NEEDS, ADVANCED,
              setStage, setSwitch, setFallback, setFallbackOn, probe, delProvider, delModel, moveModel, usedBy, keyText, priceText, loadGeneral, saveGeneral, defaultOf,
              loadAdvanced, saveAdvanced, pick, pickExe, canPick, canSave, ZOOMS, zoom, setZoom, probeAll, openPath, openDir, go,
-             cfg, exportPath, importPath, busy, pickExport, pickImport, doExport, doImport, x, loadExternal, saveExternal, pickExternal, makerStages };
+             cfg, exportPath, importPath, busy, pickExport, pickImport, doExport, doImport, x, loadExternal, saveExternal, pickExternal };
   },
 };
