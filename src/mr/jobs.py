@@ -1,4 +1,8 @@
-"""Runs started from the window: a queue, one child process at a time, history, and the per-month lock.
+"""Runs started from the window: a queue, history, and the per-month lock.
+
+Two lanes: one job that calls models at a time, and beside it estimates, which call none (they only read the archive
+and may write an external agent's first tasks). So an estimate, or the tasks of a month given to an agent, does not
+wait for a long run of another month.
 
 Each run is its own process (python -m mr ...), so closing or restarting the window does not stop it; the window
 reattaches through jobs.json and the run's progress.json. Stopping ends the process tree; every answered call is in
@@ -15,6 +19,8 @@ KINDS = {'run': '生成月报', 'plan': '估算', 'asr': '语音转写', 'topic-
 # A 专题 job's month is "专题/<id>", so its lock, progress and log sit in the 专题's own folder.
 TOPIC_KINDS = ('topic-plan', 'topic-screen', 'topic-run')
 FINAL = ('done', 'done-with-problems', 'budget-stop', 'external-wait', 'failed', 'stopped')
+LIGHT = ('plan', 'topic-plan')          # no model calls: they run in the second lane
+LANES = ('current', 'side')
 
 # ---------- processes ----------
 _k32 = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -127,12 +133,15 @@ def log_path(output_root, job):
 
 def command(job):
     api_only = ['--api-only'] if job.get('api_only') else []
+    hand_out = ['--hand-out'] if job.get('hand_out') else []
+    if job['kind'] == 'topic-plan':
+        return ['topic', 'plan', job['topic']] + hand_out
     if job['kind'] in TOPIC_KINDS:
         return ['topic', job['kind'][6:], job['topic']] + (['--budget-tokens', str(job['budget'])] if job.get('budget') else []) + api_only
     if job['kind'] == 'run':
         return ['run', job['month']] + (['--budget-tokens', str(job['budget'])] if job.get('budget') is not None else []) + api_only
     if job['kind'] == 'plan':
-        return ['plan', job['month']]
+        return ['plan', job['month']] + hand_out
     args = ['asr', '--from', job['from'], '--to', job['to']]
     for chat in job.get('chats') or []:
         args += ['--chat', chat]
@@ -140,7 +149,8 @@ def command(job):
 
 
 class Jobs:
-    """The window's queue. One job runs at a time; a watcher thread starts the next one and records the finished one."""
+    """The window's queue. data['current'] is the job calling models, data['side'] an estimate beside it; a watcher
+    thread starts the next job of each lane and records the finished ones."""
 
     def __init__(self, on_change=None):
         self.path = config.HOME / 'jobs.json'
@@ -157,7 +167,7 @@ class Jobs:
             data = json.loads(self.path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             data = {}
-        data.setdefault('queue', []); data.setdefault('history', []); data.setdefault('current', None)
+        data.setdefault('queue', []); data.setdefault('history', []); data.setdefault('current', None); data.setdefault('side', None)
         for r in data['history']:
             # Older versions ended with 校验提示 and left them; results are fixed when shown (pipeline.settle).
             if '；校验提示' in (r.get('message') or ''):
@@ -178,20 +188,33 @@ class Jobs:
         with self.lock:
             out = json.loads(json.dumps(self.data))
         root = config.load_settings()['output_root']
-        if out['current']:
-            out['current']['progress'] = read_progress(progress_path(root, out['current']))
+        for lane in LANES:
+            if out[lane]:
+                out[lane]['progress'] = read_progress(progress_path(root, out[lane]))
         return out
 
     # ----- queue edits -----
     def add(self, jobs):
-        """jobs: [{'kind', 'month', 'budget'?} | {'kind': 'asr', 'from', 'to', 'chats'?}]. Duplicates of waiting jobs are dropped."""
+        """jobs: [{'kind', 'month', 'budget'?, 'api_only'?, 'hand_out'?} | {'kind': 'asr', 'from', 'to', 'chats'?}].
+        A job like one already waiting is not added twice: the waiting one takes the new choices (models or the agent,
+        the budget, handing out tasks) and counts as added when they change it. One like a job running now is dropped."""
         added = []
         with self.lock:
             for j in jobs:
                 if j['kind'] not in KINDS:
                     raise ValueError(f'未知的任务类型 {j["kind"]}')
                 same = lambda o: o['kind'] == j['kind'] and o.get('month') == j.get('month') and j['kind'] != 'asr'
-                if any(same(o) for o in self.data['queue']) or (self.data['current'] and same(self.data['current'])):
+                waiting = next((o for o in self.data['queue'] if same(o)), None)
+                if waiting:
+                    before = {k: waiting.get(k) for k in ('api_only', 'budget', 'hand_out')}
+                    waiting.update({k: j[k] for k in ('api_only', 'budget') if k in j})
+                    waiting['hand_out'] = bool(waiting.get('hand_out') or j.get('hand_out'))
+                    if {k: waiting.get(k) for k in before} != before:
+                        added.append(waiting)
+                    continue
+                # A running estimate that does not hand out tasks does not stand in for one that does.
+                if any(self.data[lane] and same(self.data[lane]) and (self.data[lane].get('hand_out') or not j.get('hand_out'))
+                       for lane in LANES):
                     continue
                 job = {**j, 'id': uuid.uuid4().hex[:10], 'added': time.time()}
                 if j['kind'] == 'asr':
@@ -217,10 +240,18 @@ class Jobs:
             q.insert(k, q.pop(i))
             self._save()
 
-    def stop(self, clear_queue=False):
-        """End the running job's process tree. Its answered calls are cached, so it can continue later."""
+    def busy(self):
+        """Whether a job that calls models is running or waiting: one added now that calls them would wait for it."""
+        with self.lock:
+            return bool(self.data['current']) or any(j['kind'] not in LIGHT for j in self.data['queue'])
+
+    def stop(self, clear_queue=False, job_id=None):
+        """End a running job's process tree: the one with this id, else the one calling models. Its answered calls
+        are cached, so it can continue later."""
         with self.lock:
             cur = self.data['current']
+            if job_id:
+                cur = next((self.data[lane] for lane in LANES if self.data[lane] and self.data[lane]['id'] == job_id), None)
             if clear_queue:
                 self.data['queue'] = []
             if cur:
@@ -258,28 +289,34 @@ class Jobs:
                                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
         out.close()
         job.update(pid=proc.pid, created=_created(proc.pid), started=time.time(), log=str(log))
-        self._proc = proc
+        self._procs = {pid: p for pid, p in getattr(self, '_procs', {}).items() if p.poll() is None}
+        self._procs[proc.pid] = proc
         return True
 
     def _tick(self):
         with self.lock:
-            cur = self.data['current']
-            if cur and not alive(cur['pid'], cur.get('created')):
-                self._finish(cur)
-                cur = None
-            if cur or not self.data['queue']:
-                return
-            for i, job in enumerate(self.data['queue']):
-                if self._start(job):
-                    self.data['current'] = self.data['queue'].pop(i)
+            for lane in LANES:
+                cur = self.data[lane]
+                if cur and not alive(cur['pid'], cur.get('created')):
+                    self._finish(cur, lane)
+            for lane in LANES:
+                if self.data[lane]:
+                    continue
+                for i, job in enumerate(self.data['queue']):
+                    if (job['kind'] in LIGHT) != (lane == 'side') or not self._start(job):
+                        continue
+                    self.data[lane] = self.data['queue'].pop(i)
+                    if lane == 'current':
+                        # The run writes its tasks itself now: an estimate queued only to write them first is not needed.
+                        self.data['queue'] = [o for o in self.data['queue'] if not (o.get('hand_out') and o.get('month') == job.get('month'))]
                     self._save()
-                    return
+                    break
 
-    def _finish(self, job):
+    def _finish(self, job, lane='current'):
         root = config.load_settings()['output_root']
         prog = read_progress(progress_path(root, job)) or {}
-        proc = getattr(self, '_proc', None)
-        code = proc.poll() if proc is not None and proc.pid == job['pid'] else None
+        proc = getattr(self, '_procs', {}).pop(job['pid'], None)
+        code = proc.poll() if proc is not None else None
         state = prog.get('state')
         if job.get('stop_requested'):
             state = 'stopped'
@@ -299,12 +336,12 @@ class Jobs:
             path = progress_path(root, job)
             path.with_suffix('.tmp').write_text(json.dumps(prog, ensure_ascii=False), encoding='utf-8')
             path.with_suffix('.tmp').replace(path)
-        record = {k: job.get(k) for k in ('id', 'kind', 'month', 'budget', 'from', 'to', 'chats', 'topic', 'title', 'started', 'log')}
+        record = {k: job.get(k) for k in ('id', 'kind', 'month', 'budget', 'api_only', 'hand_out', 'from', 'to', 'chats', 'topic', 'title', 'started', 'log')}
         record.update(ended=time.time(), state=state, message=message[:600], tokens=prog.get('tokens'), calls=prog.get('calls'),
                       report=prog.get('report'))
         self.data['history'].insert(0, record)
         del self.data['history'][300:]
-        self.data['current'] = None
+        self.data[lane] = None
         self._save()
         if config.load_settings().get('notify') and job['kind'] not in ('plan', 'topic-plan') and state != 'stopped':
             what = (f'{job["month"]} 月报' if job['kind'] == 'run' else '语音转写' if job['kind'] == 'asr'

@@ -217,10 +217,11 @@ function parseBudget(text) {
   if (!m) throw new Error('预算请写成数字，可以用 M 表示百万');
   return Math.round(+m[1] * ({ M: 1e6, K: 1e3, '万': 1e4 }[m[2]] || 1));
 }
-async function stopJob() {
+// job: the running job to stop (the one calling models when not given).
+async function stopJob(job) {
   const ok = await confirmBox('停止运行', '停止以后，已经完成的调用都保存在缓存中，之后继续运行时不会重做。确定停止吗？', { ok: '停止', danger: true });
   if (!ok) return;
-  try { store.jobs = await api('/api/jobs/stop', { method: 'POST', body: {} }); toast('已停止', 'warn'); } catch (e) { fail(e); }
+  try { store.jobs = await api('/api/jobs/stop', { method: 'POST', body: job && job.id ? { id: job.id } : {} }); toast('已停止', 'warn'); } catch (e) { fail(e); }
 }
 
 // One month's runs, on the month's 运行 tab: the job in progress, the last run (and continuing it), the estimate.
@@ -235,7 +236,7 @@ const MonthRun = {
       <span class="muted small">开始于 {{ fmtTime(cur.started) }}</span>
       <span class="spacer"></span>
       <button class="btn sm" @click="log = cur.log"><Icon name="log"/>日志</button>
-      <button class="btn sm danger" @click="stopJob"><Icon name="stop"/>停止</button>
+      <button class="btn sm danger" @click="stopJob(cur)"><Icon name="stop"/>停止</button>
     </div>
     <div class="card-body">
       <ExternalWait v-if="cur.handoff" :h="cur.handoff" :message="'这个月有 ' + cur.handoff.tasks + ' 个任务由外部 Agent 做。下面是接口这边的进度，两边互不耽误；要用到 Agent 的结果而它还没交回时，这个月停下来等，交齐后自动继续。'"/>
@@ -243,11 +244,12 @@ const MonthRun = {
       <div v-else class="row muted"><span class="spinner"></span>{{ cur.kind === 'plan' ? '正在取数和分块（不调用模型）…' : '正在启动…' }}</div>
     </div>
   </div>
-  <div class="banner warn" v-else-if="queued" style="margin:0"><Icon name="info"/><div class="grow">这个月份的任务在排队，前面的任务完成后开始。</div>
+  <div class="banner warn" v-if="queued && !(cur && cur.kind === 'run') && !(hand && !cur)" style="margin:0"><Icon name="info"/>
+    <div class="grow">{{ queuedText }}</div>
     <button class="btn sm" @click="go('run')">查看任务</button></div>
 
   <ExternalWait v-if="hand && !cur" :h="hand" :message="handText" style="margin:0">
-    <button class="btn sm" :disabled="busy" title="不等 Agent：还没有结果的部分由各环节的模型完成，按接口计费" @click="resume(true)">改用模型做完</button>
+    <button class="btn sm" :disabled="busy && !queuedRun" title="不等 Agent：还没有结果的部分由各环节的模型完成，按接口计费" @click="resume(true)">改用模型做完</button>
   </ExternalWait>
 
   <div class="two">
@@ -309,8 +311,17 @@ const MonthRun = {
 </div>`,
   setup(props) {
     const budgetText = ref(''), masks = ref(false), log = ref(null);
-    const cur = computed(() => { const c = store.jobs.current; return c && c.month === props.month ? c : null; });
+    const cur = computed(() => runningJobs().find(j => j.month === props.month) || null);
     const queued = computed(() => store.jobs.queue.some(j => j.month === props.month));
+    const queuedRun = computed(() => store.jobs.queue.find(j => j.month === props.month && j.kind === 'run') || null);
+    const queuedText = computed(() => {
+      const run = queuedRun.value;
+      if (!run) return '这个月份的估算在排队，前面的估算完成后开始。';
+      if (run.api_only) return '这个月份在排队，前面的任务完成后开始。';
+      if (cur.value && cur.value.hand_out) return '正在写出交给外部 Agent 的任务，写好后提示词出现在下面。模型做的那部分在排队，前面的任务完成后开始。';
+      if (plan.value?.external?.after_voice) return '这个月还有语音没有转写，交给外部 Agent 的任务要等轮到这个月、转写完以后才写出。';
+      return '这个月份在排队，交给外部 Agent 的任务马上写出。';
+    });
     const busy = computed(() => !!cur.value || queued.value);
     const settings = computed(() => store.settings?.settings);
     const plan = computed(() => props.st?.plan || null);
@@ -328,6 +339,7 @@ const MonthRun = {
     // What is the case, never an order to do things in: the month goes on by itself where it can.
     const handText = computed(() => {
       const n = hand.value?.tasks, state = last.value?.state;
+      if (queuedRun.value) return `这个月有 ${n} 个任务由外部 Agent 做，现在就可以把提示词发给它。` + (queuedRun.value.api_only ? '这次排队的是模型生成，轮到时没交回的部分改由模型完成。' : '模型做的那部分在排队，轮到时接着处理；要用到 Agent 的结果而它还没交回时停下来等。');
       if (queued.value) return `这个月有 ${n} 个任务由外部 Agent 做。这个月已经在队列里，轮到时接着处理。`;
       if (state === 'external-wait') return `这个月在等外部 Agent：${n} 个任务。结果交齐后自动继续，不用回来点（消息月报的窗口开着时）。`;
       if (state) return `这个月有 ${n} 个任务由外部 Agent 做。上次运行${stateText(state)}，没有在等它；再生成时会用上已经交回的结果。`;
@@ -348,16 +360,22 @@ const MonthRun = {
       const code = /Error code: (\d+)/.exec(v), msg = /"message":\s*"([^"]+)"/.exec(v) || /'message':\s*'([^']+)'/.exec(v);
       return msg ? (code ? code[1] + '：' : '') + msg[1] : v.replace(/^\S+ \S+ /, '');
     }));
-    async function repair() { await addJobs([{ kind: 'run', month: props.month }]); }
+    const recorded = () => props.st?.status?.agent === undefined ? null : props.st.status.agent ? 'agent' : 'api';
+    async function repair() {
+      const way = await chooseWay('补做失败的部分', { recorded: recorded() });
+      if (way) await addJobs([{ kind: 'run', month: props.month, agent: way === 'agent' }]);
+    }
     const maskText = computed(() => Object.entries(plan.value?.masks || {}).map(([k, v]) => `${k} ${v}`).join('、'));
     watch(() => props.month, () => { budgetText.value = ''; });
+    // apiOnly: 改用模型做完, which asks nothing more; 继续 asks again, starting from how the month was run last time.
     async function resume(apiOnly) {
       let budget;
       try { budget = parseBudget(budgetText.value); } catch (e) { return fail(e); }
-      await addJobs([{ kind: 'run', month: props.month, budget: budget || 0, ...(apiOnly ? { api_only: true } : {}) }]);      // left empty: no cap this time
+      const way = apiOnly ? 'api' : await chooseWay('继续生成', { recorded: recorded() });
+      if (way) await addJobs([{ kind: 'run', month: props.month, budget: budget || 0, agent: way === 'agent' }]);      // left empty: no cap this time
     }
     onMounted(() => { if (!store.settings) loadSettings(); });
-    return { budgetText, masks, log, cur, queued, busy, settings, plan, last, lastLog, resumable, hand, handText, handedText, repairable, failed, repair, maskText, resume, stopJob, go,
+    return { budgetText, masks, log, cur, queued, queuedRun, queuedText, busy, settings, plan, last, lastLog, resumable, hand, handText, handedText, repairable, failed, repair, maskText, resume, stopJob, go,
              fmtTok, fmtInt, fmtTime, stateText, stateKind };
   },
 };
@@ -376,17 +394,17 @@ MRPages.run = {
 <div class="page">
   <div class="page-head">
     <h1>任务</h1>
-    <span class="sub">月报、专题和语音转写的任务按顺序一个一个运行。</span>
+    <span class="sub">要调用模型的任务按顺序一个一个运行；估算不调用模型，在旁边同时进行。</span>
   </div>
 
-  <div class="card" style="margin-bottom:14px" v-if="cur">
+  <div class="card" style="margin-bottom:14px" v-for="cur in running" :key="cur.id">
     <div class="card-head">
       <span class="dot run"></span><h2>{{ jobTitle(cur) }}</h2>
       <span class="muted small">开始于 {{ fmtTime(cur.started) }}</span>
       <span class="spacer"></span>
       <button class="btn sm" @click="goJob(cur)"><Icon name="ext"/>打开</button>
       <button class="btn sm" @click="log = cur.log"><Icon name="log"/>日志</button>
-      <button class="btn sm danger" @click="stopJob"><Icon name="stop"/>停止</button>
+      <button class="btn sm danger" @click="stopJob(cur)"><Icon name="stop"/>停止</button>
     </div>
     <div class="card-body">
       <ProgressView v-if="cur.progress" :p="cur.progress" live/>
@@ -402,7 +420,7 @@ MRPages.run = {
       <div v-if="jobs.queue.length">
         <table class="t"><tbody>
           <tr v-for="(j, i) in jobs.queue" :key="j.id">
-            <td><a href="" @click.prevent="goJob(j)">{{ jobTitle(j) }}</a></td><td class="muted small">{{ j.budget ? '预算 ' + fmtTok(j.budget) : '' }}</td>
+            <td><a href="" @click.prevent="goJob(j)">{{ jobTitle(j) }}</a></td><td class="muted small">{{ jobNote(j) }}</td>
             <td class="r" style="white-space:nowrap">
               <button class="btn ghost sm icon" title="上移" :disabled="i === 0" @click="move(j, -1)"><Icon name="up"/></button>
               <button class="btn ghost sm icon" title="下移" :disabled="i === jobs.queue.length - 1" @click="move(j, 1)"><Icon name="down"/></button>
@@ -433,13 +451,20 @@ MRPages.run = {
     if (/^\d{4}-\d{2}$/.test(route.arg)) history.replaceState(null, '', `#/reports/${route.arg}?tab=run`), parseRoute();
     const log = ref(null);
     const jobs = computed(() => store.jobs);
-    const cur = computed(() => store.jobs.current);
+    const running = computed(() => runningJobs());
+    // How a queued job will be done: with the external agent or the models, its budget, whether it writes the agent's tasks.
+    const handed = () => (store.settings?.settings?.external_stages || []).length > 0;
+    function jobNote(j) {
+      const way = ['run', 'topic-run', 'topic-screen'].includes(j.kind) && handed() ? (j.api_only ? '模型' : '外部 Agent') : '';
+      return [way, j.hand_out ? '同时写出外部 Agent 的任务' : '', j.budget ? '预算 ' + fmtTok(j.budget) : ''].filter(Boolean).join(' · ');
+    }
+    onMounted(() => { if (!store.settings) loadSettings(); });
     async function clearQueue() {
       for (const j of [...store.jobs.queue]) await api(`/api/jobs/${j.id}`, { method: 'DELETE' });
       pollJobs();
     }
     async function move(j, d) { try { store.jobs = await api(`/api/jobs/${j.id}/move`, { method: 'POST', body: { delta: d } }); } catch (e) { fail(e); } }
     async function remove(j) { try { store.jobs = await api(`/api/jobs/${j.id}`, { method: 'DELETE' }); } catch (e) { fail(e); } }
-    return { log, jobs, cur, clearQueue, move, remove, stopJob, jobTitle, goJob, toast, fmtTok, fmtTime, fmtDur, stateText, stateKind };
+    return { log, jobs, running, jobNote, clearQueue, move, remove, stopJob, jobTitle, goJob, toast, fmtTok, fmtTime, fmtDur, stateText, stateKind };
   },
 };

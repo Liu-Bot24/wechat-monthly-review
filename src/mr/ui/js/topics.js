@@ -99,12 +99,12 @@ MRPages.topics = {
                 <div v-else class="row muted"><span class="spinner"></span>{{ job.kind === 'topic-plan' ? '正在取数和查找（不调用模型）…' : '正在启动…' }}</div>
               </div>
             </div>
-            <div class="banner warn" v-else-if="queued"><Icon name="info"/><div class="grow">这个专题的任务在排队，前面的任务完成后开始。</div>
+            <div class="banner warn" v-if="queued && !(job && job.kind !== 'topic-plan') && !(handoff && !job)"><Icon name="info"/><div class="grow">{{ queuedText }}</div>
               <button class="btn sm" @click="go('run')">查看队列</button></div>
             <div class="banner bad" v-if="!job && lastFail"><Icon name="warn"/><div class="grow">上次{{ lastFail.what }}没有完成：{{ lastFail.message }}</div>
               <button class="btn sm" v-if="lastFail.log" @click="showLog(lastFail.log)"><Icon name="log"/>日志</button></div>
-            <ExternalWait v-if="handoff" :h="handoff" :message="'这个专题有 ' + handoff.tasks + ' 个任务由外部 Agent 做。' + (job ? '接口这边照常进行；要用到 Agent 的结果而它还没交回时停下来等，交齐后自动继续。' : detail.status && detail.status.state === 'external-wait' ? '现在在等它，结果交齐后自动继续（消息月报的窗口开着时）。' : '再生成时会用上已经交回的结果。')">
-              <button class="btn sm" v-if="!job" :disabled="busy" title="不等 Agent：还没有结果的部分由各环节的模型完成，按接口计费" @click="finish(true)">改用模型做完</button>
+            <ExternalWait v-if="handoff" :h="handoff" :message="'这个专题有 ' + handoff.tasks + ' 个任务由外部 Agent 做。' + (job && job.kind !== 'topic-plan' ? '接口这边照常进行；要用到 Agent 的结果而它还没交回时停下来等，交齐后自动继续。' : queuedRun ? '现在就可以把提示词发给它；模型做的那部分在排队，轮到时接着处理。' : detail.status && detail.status.state === 'external-wait' ? '现在在等它，结果交齐后自动继续（消息月报的窗口开着时）。' : '再生成时会用上已经交回的结果。')">
+              <button class="btn sm" v-if="!job" :disabled="busy && !queuedRun" title="不等 Agent：还没有结果的部分由各环节的模型完成，按接口计费" @click="finish(true)">改用模型做完</button>
             </ExternalWait>
             <div class="banner warn" v-if="detail.missing.length"><Icon name="warn"/>
               <div class="grow">专题用的是月报各环节的模型，这些环节还没有选择：{{ detail.missing.join('、') }}。</div>
@@ -342,8 +342,15 @@ MRPages.topics = {
     // Finished with failed calls under the same settings: running again asks only for those, the rest is cached.
     const repairable = computed(() => !!report.value && !reportStale.value && detail.value?.status?.state === 'done-with-problems'
       && Object.keys(detail.value.status.failures || {}).length > 0);
-    const job = computed(() => { const c = store.jobs.current; return c && c.month === '专题/' + id.value ? c : null; });
+    const job = computed(() => runningJobs().find(j => j.month === '专题/' + id.value) || null);
     const queued = computed(() => store.jobs.queue.some(j => j.month === '专题/' + id.value));
+    const queuedRun = computed(() => store.jobs.queue.find(j => j.month === '专题/' + id.value && j.kind !== 'topic-plan') || null);
+    const queuedText = computed(() => {
+      const run = queuedRun.value;
+      if (!run || run.api_only) return '这个专题的任务在排队，前面的任务完成后开始。';
+      if (job.value) return '正在写出交给外部 Agent 的任务，写好后提示词出现在下面。模型做的那部分在排队，前面的任务完成后开始。';
+      return '这个专题在排队。交给外部 Agent 的任务能先写出的会马上写出；要先由模型筛查的，筛查完才写出阅读任务。';
+    });
     const busy = computed(() => !!job.value || queued.value);
     const html = computed(() => report.value ? md.render(report.value.markdown, {}) : '');
     const excluded = chat => spec.value.exclude_chats.includes(chat);
@@ -368,8 +375,8 @@ MRPages.topics = {
 
     // Tasks waiting for an external agent: from the running job while there is one, else from the 专题 as last loaded.
     const handoff = computed(() => job.value ? job.value.handoff || null : detail.value?.handoff || null);
-    async function finish(apiOnly) {
-      const r = await addJobs([{ kind: 'topic-run', topic: id.value, ...(apiOnly ? { api_only: true } : {}) }]);
+    async function finish() {
+      const r = await addJobs([{ kind: 'topic-run', topic: id.value, agent: false }]);
       if (r && r.added.length) loadList();
     }
 
@@ -499,33 +506,38 @@ MRPages.topics = {
       if (detail.value.blockers.length) { tab.value = 'config'; return toast('还要' + detail.value.blockers.join('、'), 'warn'); }
       if (kind !== 'topic-plan' && detail.value.missing.length) return toast('这些环节还没有选择模型：' + detail.value.missing.join('、'), 'warn');
       const p = plan.value;
+      let way = 'api';
+      const status = detail.value?.status;
+      const recorded = status?.agent === undefined ? null : status.agent ? 'agent' : 'api';
       if (kind === 'topic-screen') {
         const est = p && p.screen && !planStale.value ? `约 ${fmtTok(p.screen.todo_est * ratio.value)} token` : '用量要先预览才知道';
-        if (!await confirmBox('模型筛查', `模型会读一遍范围内的全部消息，找出和话题有关的部分，${est}。筛查完先给你看结果，不会接着总结。`, { ok: '开始筛查' })) return;
+        way = await chooseWay('模型筛查', { recorded, where: '专题页上', ok: '开始筛查',
+          body: `模型会读一遍范围内的全部消息，找出和话题有关的部分，${est}。筛查完先给你看结果，不会接着总结。` });
       }
-      if (kind === 'topic-run' && !repairable.value) {
-        let body;
-        if (!p || planStale.value) body = '还没有按现在的配置预览过，不知道要用多少 token。可以先预览，看看会读哪些内容。';
+      if (kind === 'topic-run') {
+        let body = '';
+        if (repairable.value) body = '';
+        else if (!p || planStale.value) body = '还没有按现在的配置预览过，不知道要用多少 token。可以先预览，看看会读哪些内容。';
         else body = `预计约 ${fmtTok(view.value.tokens)} token、${view.value.minutes} 分钟（${p.estimate.basis}），读 ${view.value.chats} 个会话里的 ${fmtInt(view.value.lines)} 条消息。`
           + (p.screen && p.screen.todo_est ? '\n其中包括先做一遍模型筛查。' : '');
-        if (report.value) body += '\n\n会替换现有的结果；以前调用过、条件也没变的部分直接用缓存。';
-        if (!await confirmBox(report.value ? '重新生成专题' : '生成专题', body, { ok: '生成' })) return;
+        if (report.value && !repairable.value) body += '\n\n会替换现有的结果；以前调用过、条件也没变的部分直接用缓存。';
+        way = await chooseWay(repairable.value ? '补做失败的部分' : report.value ? '重新生成专题' : '生成专题', { recorded, where: '专题页上', ok: '生成', body });
       }
-      const r = await addJobs([{ kind, topic: id.value }]);
+      if (!way) return;
+      const r = await addJobs([{ kind, topic: id.value, ...(kind === 'topic-plan' ? {} : { agent: way === 'agent' }) }]);
       if (r && r.added.length) loadList();
     }
     async function stop() {
       if (!await confirmBox('停止', '停止以后，已经完成的调用都保存在缓存中，再次运行时不会重做。确定停止吗？', { ok: '停止', danger: true })) return;
-      try { store.jobs = await api('/api/jobs/stop', { method: 'POST', body: {} }); } catch (e) { fail(e); }
+      try { store.jobs = await api('/api/jobs/stop', { method: 'POST', body: job.value ? { id: job.value.id } : {} }); } catch (e) { fail(e); }
     }
     async function showLog(path) {
       if (!path) return toast('没有日志', 'warn');
       try { log.value = { path, text: (await api('/api/jobs/log?path=' + encodeURIComponent(path))).text }; } catch (e) { fail(e); }
     }
     // When this 专题's job ends, show what it made.
-    watch(() => store.jobs.current?.id, (now, before) => {
-      const rec = before && store.jobs.history.find(r => r.id === before);
-      if (!rec || rec.month !== '专题/' + id.value) return;
+    onJobEnd(rec => {
+      if (rec.month !== '专题/' + id.value) return;
       for (const k of Object.keys(openChats)) delete openChats[k];
       loadDetail(); loadList();
       if (['done', 'done-with-problems'].includes(rec.state)) tab.value = rec.kind === 'topic-run' ? 'result' : 'preview';
@@ -590,7 +602,7 @@ MRPages.topics = {
     });
     onBeforeUnmount(() => { if (saveTimer) save(); });
     return { UNITS, PERSPECTIVE_HELP, TEMPLATE_HELP, TOPIC_JOB, list, meta, detail, spec, tab, saving, drafting, expanding, problems, kwText,
-             openChats, lid, masks, log, ask, scroller, id, plan, report, planStale, reportStale, repairable, job, queued, busy, html, view, ratio, maskText,
+             openChats, lid, masks, log, ask, scroller, id, plan, report, planStale, reportStale, repairable, job, queued, queuedRun, queuedText, busy, html, view, ratio, maskText,
              excludedCount, lastFail, handoff, finish, excluded, catTitle, create, duplicate, remove, draft, settle, openScope, addKeywords, expand,
              setUnit, setDay, setMonth, setYear, startJob, stop, showLog, toggleExclude, toggleChat, moreWindows, marked, onReportClick, copy,
              go, openPath, rangeText, monthLabel, stateKind, fmtTok, fmtInt };

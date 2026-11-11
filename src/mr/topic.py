@@ -761,13 +761,7 @@ class TopicRun(Pipeline):
         """The topic judged by a model over every line in scope. call=False uses only answers already cached.
         Returns (chunks, keys of the chunks answered)."""
         chunks = self._screen_chunks()
-        def check(c):
-            allowed = set(c['sids'])
-            def f(answer):
-                answer['hits'] = [h for h in answer.get('hits') or [] if isinstance(h, dict)]
-                for h in answer['hits']:
-                    h['msg_ids'] = [s for s in ids(h.get('msg_ids')) if s in allowed]
-            return f
+        check = self._screen_check
         if call:
             away = self._hand_out(models, [('topic_screen', c['key'], self.system['topic_screen'], c['text'], check(c)) for c in chunks])
             self._p('begin', 'screen', len(chunks) - len(away), f'模型筛查 {len(chunks)} 块' + (f'，其中 {len(away)} 块交给外部 Agent' if away else ''))
@@ -787,6 +781,14 @@ class TopicRun(Pipeline):
             self._p('end', 'screen', message=f'筛查命中 {sum(len(v) for v in hits.values())} 条，涉及 {len(hits)} 个会话'
                     + (f'；{len(self.screen_failures)} 块失败' if self.screen_failures else ''))
         return chunks, set(results)
+
+    def _screen_check(self, c):
+        allowed = set(c['sids'])
+        def f(answer):
+            answer['hits'] = [h for h in answer.get('hits') or [] if isinstance(h, dict)]
+            for h in answer['hits']:
+                h['msg_ids'] = [s for s in ids(h.get('msg_ids')) if s in allowed]
+        return f
 
     def read(self, models):
         away = self._hand_out(models, [('topic_read', c['key'], self.system['topic_read'], c['text'], self._validate_cards(c)) for c in self.chunks])
@@ -825,19 +827,28 @@ class TopicRun(Pipeline):
         return answer['markdown'], dropped
 
     # ---------- preview ----------
-    def plan(self):
-        """Find what would be read and estimate it, without calling a model (a model's topic judgement counts only when cached)."""
+    def plan(self, hand_out=False):
+        """Find what would be read and estimate it, without calling a model (a model's topic judgement counts only when cached).
+        hand_out: also write the external agent's first tasks: the screening's, or, once it is done (or not used), the reading's."""
         self.progress = Progress(self.run_dir / 'plan-progress.json', self.month, 'topic-plan', [('prepare', '取数与查找', 1.0)])
         try:
             self._p('begin', 'prepare', 0, '取数与查找')
             self.prepare()
-            models = Models(self.models_config, self.run_dir)
+            models = self._agent_models(None, False) if hand_out else Models(self.models_config, self.run_dir)
             screen = self.screen(models, call=False) if self.spec['topic']['mode'] == 'ai' else None
+            handed = 0
+            if hand_out and screen and len(screen[1]) < len(screen[0]):
+                handed = len(self._hand_out(models, [('topic_screen', c['key'], self.system['topic_screen'], c['text'], self._screen_check(c))
+                                                     for c in screen[0] if c['key'] not in screen[1]]))
             self._shape()
             self.chunks = self._read_chunks()
+            if hand_out and not (screen and len(screen[1]) < len(screen[0])):
+                handed = len(self._hand_out(models, [('topic_read', c['key'], self.system['topic_read'], c['text'], self._validate_cards(c))
+                                                     for c in self.chunks]))
             self.write_masks()
             plan = self._write_plan(screen)
-            self.progress.finish('done', f'找到 {plan["totals"]["chats"]} 个会话' + (f'，命中 {plan["totals"]["hits"]} 条' if self.spec['topic']['mode'] != 'none' else ''))
+            self.progress.finish('done', f'找到 {plan["totals"]["chats"]} 个会话' + (f'，命中 {plan["totals"]["hits"]} 条' if self.spec['topic']['mode'] != 'none' else '')
+                                 + (f'；{handed} 个任务交给外部 Agent' if handed else ''))
             return 0
         except BaseException as e:
             self.progress.finish('failed', (str(e) if isinstance(e, SystemExit) else f'{type(e).__name__}: {e}')[:600])
@@ -913,6 +924,13 @@ class TopicRun(Pipeline):
     def stage_label(self, stage):
         return STAGE_LABELS.get(stage) or Pipeline.stage_label(self, stage)
 
+    def _agent_models(self, budget, api_only):
+        # A 专题 stage runs on a monthly stage's model, and goes to the agent when that monthly stage does.
+        handed = set(self.settings.get('external_stages') or [])
+        aliases = {**ALIASES, 'topic_read': READERS[self.spec['reader']]}
+        return self._models(budget, api_only, sorted(handed | {a for a, base in aliases.items() if base in handed} - {'topic_plan'}),
+                            {a: (external.MONTHLY[base][0], a) for a, base in aliases.items()})     # in the folder of the stage that decides who reads
+
     def _run(self, budget_tokens, until, api_only=False):
         started = time.time()
         missing = missing_stages(config.load_models(), self.settings, self.spec)
@@ -920,11 +938,7 @@ class TopicRun(Pipeline):
             raise SystemExit('这些环节还没有选择模型：' + '、'.join(missing) + '。专题用的是月报各环节的模型，请在 设置 › 接口与模型 › 环节 中选择。')
         self._p('begin', 'prepare', 0, '取数与查找')
         self.prepare()
-        # A 专题 stage runs on a monthly stage's model, and goes to the agent when that monthly stage does.
-        handed = set(self.settings.get('external_stages') or [])
-        aliases = {**ALIASES, 'topic_read': READERS[self.spec['reader']]}
-        models = self._models(budget_tokens or None, api_only, sorted(handed | {a for a, base in aliases.items() if base in handed} - {'topic_plan'}),
-                              {a: (external.MONTHLY[base][0], a) for a, base in aliases.items()})     # in the folder of the stage that decides who reads
+        models = self._agent_models(budget_tokens or None, api_only)
         self.progress.state['budget'] = budget_tokens or None
         self.progress.tokens(models.used, 0)
         self._p('end', 'prepare', message=f'取数完成：{len(self.packets)} 个会话')
@@ -940,7 +954,7 @@ class TopicRun(Pipeline):
             if not self.chunks:
                 raise SystemExit('在所选范围和时间里没有找到要读的内容' + ('：查找没有命中任何消息。' if self.spec['topic']['mode'] != 'none' else '。'))
             base = {'est_tokens': sum(c['est_tokens'] for c in self.chunks), 'search': search_digest(self.spec),
-                    'source_messages': sum(p['messages'] for p in self.packets)}
+                    'source_messages': sum(p['messages'] for p in self.packets), 'agent': bool(models.external['stages'])}
             self._write_status('running', **base)
             results, failures = self.read(models)
             failures.update(self.screen_failures)
@@ -949,12 +963,12 @@ class TopicRun(Pipeline):
             failures.update(self.verify(models))
             body, dropped = self.compose(models)
         except BudgetStop:
-            self._write_status('budget-stop', tokens_used=models.used)
+            self._write_status('budget-stop', tokens_used=models.used, agent=bool(models.external['stages']))
             message = f'已达到这次的预算上限，暂停，已用 {models.used:,} token。再次生成时已完成的部分不会重做。'
             self.progress.finish('budget-stop', message)
             return 3
         except ExternalPending:
-            return self._wait_external(models, tokens_used=models.used)
+            return self._wait_external(models, tokens_used=models.used, agent=True)
         models.external_state()
         models.keep_current()
         self._p('begin', 'assemble', 1, '写出结果')
