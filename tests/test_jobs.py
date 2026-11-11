@@ -79,6 +79,17 @@ class QueueTest(unittest.TestCase):
             self.end('side')
             self.end('current')
             self.assertEqual(self.lanes(), (('run', '2026-08'), None, []))
+            # A month with tasks out already (waiting for a later batch): no estimate first, it would clear that batch.
+            self.end('current')
+            server.add_jobs({'jobs': [{'kind': 'run', 'month': '2026-09'}]})
+            self.q._tick()
+            from mr import external
+            later = external.root(self.settings) / '精读' / '2026-06' / external.TASKS / 'esc-1.md'
+            later.parent.mkdir(parents=True)
+            later.write_text('任务', encoding='utf-8')
+            server.add_jobs({'jobs': [{'kind': 'run', 'month': '2026-06', 'agent': True}]})
+            self.assertEqual(self.lanes(), (('run', '2026-09'), None, [('run', '2026-06')]))
+            self.q.data['queue'].clear()
             # Nothing else running: the run writes its tasks itself, no estimate first.
             self.end('current')
             server.add_jobs({'jobs': [{'kind': 'run', 'month': '2026-07', 'agent': True}]})
