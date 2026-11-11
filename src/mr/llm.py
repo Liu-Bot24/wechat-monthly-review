@@ -307,7 +307,8 @@ class Models:
             waiting, rejected = dict(self.waiting), dict(self.rejected)
         ext.prune(self.external, sorted({s for s, _ in waiting} | set(self.external['stages']) | set(self.config['stages'])), set(waiting))
         from .jobs import _mr                # how this program's command line is started, for the agent's own check
-        folders = sorted({self.external['root'] / ext.label(self.external, s) for s in self.external['stages']})
+        names = sorted({ext.label(self.external, s) for s in self.external['stages']})
+        folders = ext.owner_folders(self.external['root'], names, self.external['owner'])      # this month's or 专题's own
         return {'folder': str(self.external['root']), 'prompt': ext.prompt(folders or [self.external['root']], _mr()),
                 'pending': dict(Counter(stage for stage, _ in waiting)), 'rejected': rejected}
 
