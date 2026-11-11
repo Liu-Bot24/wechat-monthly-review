@@ -983,7 +983,9 @@ def get_settings():
     s = config.load_settings()
     return {'settings': s, 'defaults': config.DEFAULTS, 'home': str(config.HOME),
             'external': {'stages': [{'key': st['key'], 'label': st['label']} for st in config.STAGES if st['key'] in config.EXTERNAL_STAGES],
-                         'default_root': str(external.root({**s, 'external_root': ''}))}}
+                         'default_root': str(external.root({**s, 'external_root': ''})),
+                         # the saved folder, and whether a task has been written there yet (only then is there anything to open)
+                         'root': str(external.root(s)), 'root_exists': external.root(s).is_dir()}}
 
 @app.put('/api/settings')
 def put_settings(body: dict = Body(...)):
