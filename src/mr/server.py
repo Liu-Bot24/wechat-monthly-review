@@ -402,10 +402,13 @@ def add_jobs(body: dict = Body(...)):
             fail(400, '预算要么不填，要么是正整数（0 表示这次不限）')
     first = []
     if jobs.busy():
-        snap = jobs.snapshot()
+        snap, s = jobs.snapshot(), config.load_settings()
         running = {(snap[lane] or {}).get('month') for lane in LANES}
         for j in items:
-            if j.get('kind') in ('run', 'topic-run', 'topic-screen') and not j['api_only'] and j['month'] not in running:
+            # Only a month or 专题 with no task out yet: one waiting for a later batch (re-reads, the second reader) has its
+            # first batch done, and an estimate would clear that later batch's tasks and results as not its own.
+            if j.get('kind') in ('run', 'topic-run', 'topic-screen') and not j['api_only'] and j['month'] not in running \
+                    and not external.owner_tally(s, j['month'])['tasks']:
                 first.append({'kind': 'plan', 'month': j['month'], 'hand_out': True} if j['kind'] == 'run' else
                              {'kind': 'topic-plan', 'topic': j['topic'], 'month': j['month'], 'title': j['title'], 'hand_out': True})
     return {'added': jobs.add(first + items)}
