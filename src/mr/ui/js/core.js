@@ -38,8 +38,25 @@ function toast(text, kind = 'info', ms = 4200) {
 function fail(e) { toast(e.message || String(e), 'bad', 8000); }
 // With a check label the dialog also shows a checkbox and resolves to false or { checked }.
 // With type, the dialog asks for that text to be typed and only then lets the action through.
-function confirmBox(title, body, { ok = '确定', danger = false, cancel = '取消', check = null, type = null } = {}) {
-  return new Promise(resolve => { ui.dialog = { title, body, ok, cancel, danger, check, checked: false, type, typed: '', resolve }; });
+// choices: [{ value, label, hint }] shown as options, choice the one picked first; the answer is then { choice }.
+function confirmBox(title, body, { ok = '确定', danger = false, cancel = '取消', check = null, type = null, choices = null, choice = null } = {}) {
+  return new Promise(resolve => { ui.dialog = { title, body, ok, cancel, danger, check, checked: false, type, typed: '', choices, choice, resolve }; });
+}
+
+// Who does the stages ticked under 设置 › 外部 Agent this time: 'api' (their models) or 'agent'; null when the dialog is
+// closed. The question joins the confirmation a start already asks for (body); with no stage ticked there it is not
+// asked: the models, after that confirmation if there is one. recorded: how this month or 专题 was started last time.
+async function chooseWay(title, { recorded = null, where = '这个月份的"运行"里', body = '', ok = '开始' } = {}) {
+  if (!store.settings) { try { await loadSettings(); } catch (e) { fail(e); return null; } }
+  const ticked = store.settings.settings.external_stages || [];
+  if (!ticked.length) return !body || await confirmBox(title, body, { ok }) ? 'api' : null;
+  const names = (store.settings.external.stages || []).filter(s => ticked.includes(s.key)).map(s => s.label).join('、');
+  const r = await confirmBox(title, (body ? body + '\n\n' : '') + `${names}这次由谁来做？其余环节都用模型。`, { ok, choice: recorded || loadLocal('way', 'api'), choices: [
+    { value: 'api', label: '模型', hint: '通过接口调用，按接口计费。和其他任务排队，一个接一个进行。' },
+    { value: 'agent', label: '外部 Agent', hint: `任务马上写出，不用等前面的任务：在${where}复制提示词发给 Agent。其余环节排队，轮到时进行。` }] });
+  if (!r) return null;
+  saveLocal('way', r.choice);
+  return r.choice;
 }
 
 // Delete a month's report: files go to the Recycle Bin, and the month leaves the usage page.
@@ -212,7 +229,9 @@ const SourceModal = {
       catch (e) { fail(e); busy.value = false; }
     }
     async function again() {
-      const r = await addJobs([{ kind: 'run', month: props.month }]);
+      const way = await chooseWay('重新生成');
+      if (!way) return;
+      const r = await addJobs([{ kind: 'run', month: props.month, agent: way === 'agent' }]);
       if (r && r.added.length) go('reports', props.month, { tab: 'run' });
       emit('close');
     }
@@ -226,9 +245,21 @@ const store = reactive({
   speed: [],            // recent [time, tokens] samples of the running job, for tokens per minute
 });
 let pollTimer = null;
+// The jobs running now: the one calling models, and an estimate beside it.
+const runningJobs = (jobs = store.jobs) => [jobs.current, jobs.side].filter(Boolean);
+// fn(record) when a running job ends, with its record from the history.
+function onJobEnd(fn) {
+  return watch(() => runningJobs().map(j => j.id).join('|'), (now, before) => {
+    const still = now.split('|');
+    for (const id of (before || '').split('|')) {
+      const rec = id && !still.includes(id) && store.jobs.history.find(r => r.id === id);
+      if (rec) fn(rec);
+    }
+  });
+}
 async function pollJobs() {
   try {
-    const before = store.jobs.current;
+    const before = runningJobs();
     const data = await api('/api/jobs');
     store.connected = true;
     const cur = data.current;
@@ -238,17 +269,19 @@ async function pollJobs() {
       while (store.speed.length > 2 && now - store.speed[0][0] > 180) store.speed.shift();
     } else store.speed = [];
     // A job that just ended: say how it went and refresh what depends on it.
-    if (before && (!cur || cur.id !== before.id)) {
-      const rec = data.history.find(r => r.id === before.id);
+    const now = runningJobs(data).map(j => j.id);
+    const ended = before.filter(j => !now.includes(j.id));
+    for (const j of ended) {
+      const rec = data.history.find(r => r.id === j.id);
       if (rec) toast(`${jobName(rec)}：${stateText(rec.state)}${rec.message ? '\n' + rec.message : ''}`, stateKind(rec.state) === 'ok' ? 'ok' : stateKind(rec.state) || 'info', 9000);
-      loadOverview();
     }
+    if (ended.length) loadOverview();
     store.jobs = data;
   } catch (e) {
     store.connected = false;
   }
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(pollJobs, store.jobs.current ? 1200 : 3000);
+  pollTimer = setTimeout(pollJobs, runningJobs().length ? 1200 : 3000);
 }
 let readingTimer = null;
 async function loadOverview() {

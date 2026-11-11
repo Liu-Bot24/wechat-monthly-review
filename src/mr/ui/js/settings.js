@@ -217,11 +217,11 @@ MRPages.settings = {
     </div>
 
     <div class="card" style="margin-bottom:14px" v-if="x">
-      <div class="card-head"><h2 style="white-space:nowrap">外部 Agent</h2><span class="muted small">勾选的环节由你自己的 Agent 做，用它的额度；没勾选的照常走接口。要用到结果而还没交回时，该月停下来等，交齐后自动继续。</span></div>
+      <div class="card-head"><h2 style="white-space:nowrap">外部 Agent</h2><span class="muted small">每次生成时选择由模型还是由你自己的 Agent 做勾选的环节；选 Agent 时用它的额度，没勾选的环节照常走接口。要用到结果而还没交回时，该月停下来等，交齐后自动继续。</span></div>
       <div class="card-body form-card" style="padding-top:4px;padding-bottom:10px">
         <div class="setting"><div><div class="k">交给外部 Agent 的环节</div><div class="help">这些环节仍要在上面选好模型：抽查和"改用模型做完"时用它。</div></div>
           <div class="ctl"><label class="check" v-for="s in store.settings.external.stages" :key="s.key"><input type="checkbox" :value="s.key" v-model="x.external_stages">{{ s.label }}</label></div><div></div></div>
-        <div class="setting"><div><div class="k">交接文件夹</div><div class="help">估算或生成时，这些环节的任务写进这里，每个环节一个子文件夹；第一次写出任务时才建立。任务写出后，在月报页该月份的"运行"里（专题在专题页）生成提示词、复制给 Agent。</div></div>
+        <div class="setting"><div><div class="k">交接文件夹</div><div class="help">选择交给外部 Agent 生成时，这些环节的任务写进这里，每个环节一个子文件夹；第一次写出任务时才建立。任务写出后，在月报页该月份的"运行"里（专题在专题页）生成提示词、复制给 Agent。</div></div>
           <div class="ctl"><input class="input grow" v-model="x.external_root" :placeholder="'留空：' + store.settings.external.default_root"><button class="btn" v-if="canPick()" @click="pickExternal"><Icon name="folder"/>选择</button>
             <button class="btn ghost" v-if="store.settings.external.root_exists && x.external_root.trim() === (store.settings.settings.external_root || '')" @click="openPath(store.settings.external.root)">打开</button></div><div></div></div>
         <div class="setting"><div><div class="k">抽查比例</div><div class="help">收回结果时随机抽这个比例，让该环节的模型再做一遍来对比；外部结果漏掉要点的那些改用模型的结果，抽查情况写进报告附录。填 0 不抽查。</div></div>

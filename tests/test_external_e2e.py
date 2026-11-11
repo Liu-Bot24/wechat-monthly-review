@@ -31,6 +31,8 @@ def answer_for(stage, user):
         return {'markdown': f'分类详情 {tag}：' + '、'.join(re.findall(r'结论 \w+|补充 \w+|话题 \w+', user))}
     if stage == 'compose_main':
         return {'overview': f'总览 {tag}', 'actions': '无', 'key_events': f'要事 {tag}', 'insights': f'洞察 {tag}'}
+    if stage == 'topic_compose':
+        return {'markdown': f'专题 {tag}'}
     raise AssertionError(f'没有准备 {stage} 的回答')
 
 
@@ -145,11 +147,14 @@ class ExternalEndToEndTest(unittest.TestCase):
     def test_the_estimate_hands_out_the_agents_tasks_before_anything_runs(self):
         s = {**config.load_settings(), 'archive_root': str(self.archive), 'output_root': str(self.tmp.name + '/先估算'),
              'asr': False, 'vision': False, 'notify': False, 'external_stages': ['scan_b']}
-        def estimate(models):
+        def estimate(models, hand_out=True):
             pipe = Pipeline(ROOT, MONTH, s, models)
             self.addCleanup(pipe.archive.close)
-            plan = pipe.plan(quiet=True)
+            plan = pipe.plan(quiet=True, hand_out=hand_out)
             return pipe, plan, sorted(p.name for p in (external.root(s) / '扫读' / MONTH / external.TASKS).glob('*.md'))
+        # A plain estimate only estimates; one made for a run that goes to the agent also writes the agent's tasks.
+        _, plan, tasks = estimate(self.models, False)
+        self.assertEqual((plan['external']['handed'], tasks), ({}, []))
         pipe, plan, tasks = estimate(self.models)
         scans = sum(c['stage'] == 'scan_b' for c in pipe.chunks)
         self.assertGreater(scans, 0)
@@ -184,7 +189,7 @@ class ExternalEndToEndTest(unittest.TestCase):
         blank = {'providers': {}, 'models': {}, 'stages': {}, 'fallback': {'enabled': False, 'models': ['', '']}}
         pipe = Pipeline(ROOT, MONTH, s, blank)
         self.addCleanup(pipe.archive.close)
-        plan = pipe.plan(quiet=True)
+        plan = pipe.plan(quiet=True, hand_out=True)
         self.assertGreater(plan['est_tokens'], 0)
         self.assertEqual(plan['external'], {'handed': {}, 'after_voice': False, 'no_model': ['扫读', '精读']})
         self.assertEqual(list(external.root(s).glob('**/*.md')), [])
@@ -234,7 +239,7 @@ class ExternalEndToEndTest(unittest.TestCase):
         root = str(external.root(s))
         queued = []
         check = lambda: main(['check', root, '--wait', '0'])
-        fake = mock.Mock(add=lambda items: queued.extend(items) or items)
+        fake = mock.Mock(add=lambda items: queued.extend(items) or items, busy=lambda: False)
         with mock.patch('builtins.print'), mock.patch.object(server, 'jobs', fake), mock.patch.object(server, '_resumed', {}):
             self.assertEqual(check(), 0)                         # the agent was started before anything: nothing to do, nothing coming
             self.assertEqual(self.run_once(s)[0], 4)             # the month stops where the first results are missing
@@ -243,7 +248,7 @@ class ExternalEndToEndTest(unittest.TestCase):
             play_agent(root)
             self.assertEqual(check(), 3)                         # all pass, and the month will go on: the agent waits for more
             server._resume_waiting(); server._resume_waiting()
-            self.assertEqual(queued, [{'kind': 'run', 'month': MONTH}])      # queued once for these results
+            self.assertEqual(queued, [{'kind': 'run', 'month': MONTH, 'api_only': False}])      # queued once, for the agent again
             self.assertEqual(self.run_once(s)[0], 4)             # it goes on, and stops for the second batch
             self.assertEqual(check(), 1)                         # which the waiting agent is told about
             play_agent(root)
@@ -320,6 +325,34 @@ class ExternalEndToEndTest(unittest.TestCase):
             code, pipe = self.run_once(s)
         self.assertEqual((code, pipe.external_used['scan_b']), (0, len(names)))
 
+    def test_a_topic_given_to_the_agent_gets_its_tasks_before_its_run(self):
+        """A 专题 whose run waits behind another job: its estimate writes the agent's reading tasks at once; a plain
+        estimate writes none; the run that follows finds those tasks and writes no others."""
+        from mr import topic
+        s = self.settings('专题', external_stages=['read_a'])
+        spec = {**topic.blank(), 'title': '合同', 'range': {'unit': 'month', 'from': MONTH + '-01', 'to': MONTH + '-31'},
+                'scope': {**topic.new_scope(), 'follow_monthly': True},
+                'topic': {'mode': 'text', 'description': '', 'keywords': ['合同'], 'window': 15}}
+        tid = topic.create(s, spec)
+        def made(**kw):
+            run = topic.TopicRun(ROOT, tid, s, self.models)
+            self.addCleanup(run.archive.close)
+            with mock.patch('builtins.print'):
+                return run, (run.plan(**kw) if 'hand_out' in kw else run.run())
+        tasks = lambda: sorted(p.name for p in external.root(s).glob(f'**/{external.TASKS}/*.md'))
+        made(hand_out=False)
+        self.assertEqual(tasks(), [])
+        run, _ = made(hand_out=True)
+        self.assertGreater(len(run.chunks), 0)
+        handed = tasks()
+        self.assertEqual(len(handed), len(run.chunks))
+        self.assertFalse((run.run_dir / 'receipts.jsonl').exists())                 # nothing was asked of any model
+        run, code = made()
+        self.assertEqual((code, tasks()), (4, handed))
+        play_agent(external.root(s))
+        run, code = made()
+        self.assertEqual((code, run.external_used['topic_read']), (0, len(handed)))
+
     def test_tasks_an_agent_is_working_on_keep_their_names(self):
         """Tasks written under an earlier naming, for the same blocks and instructions, stay as they are: the results
         the agent writes for them are found, and no second set of tasks appears beside them."""
@@ -328,7 +361,7 @@ class ExternalEndToEndTest(unittest.TestCase):
         def estimate():
             pipe = Pipeline(ROOT, MONTH, s, self.models)
             self.addCleanup(pipe.archive.close)
-            pipe.plan(quiet=True)
+            pipe.plan(quiet=True, hand_out=True)
             return pipe
         pipe = estimate()
         base = external.root(s) / '扫读' / MONTH

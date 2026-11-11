@@ -133,11 +133,11 @@ MRPages.overview = {
     }
     async function generate(list) {
       const done = list.map(m => byMonth.value[m]).filter(m => m.report && !m.stale.length);
-      if (done.length) {
-        const ok = await confirmBox('重新生成', `${done.map(m => monthLabel(m.month)).join('、')} 已经有最新的月报。重新生成会直接使用缓存，几乎不消耗 token，但会覆盖现有的月报文件。继续吗？`);
-        if (!ok) return;
-      }
-      const r = await addJobs(list.map(month => ({ kind: 'run', month })));
+      const body = done.length ? `${done.map(m => monthLabel(m.month)).join('、')} 已经有最新的月报。重新生成会直接使用缓存，几乎不消耗 token，但会覆盖现有的月报文件。` : '';
+      const way = await chooseWay(done.length ? '重新生成' : list.length > 1 ? `生成 ${list.length} 个月` : `生成 ${monthLabel(list[0])}`,
+                                  { body, where: list.length > 1 ? '各月份的"运行"里' : '这个月份的"运行"里' });
+      if (!way) return;
+      const r = await addJobs(list.map(month => ({ kind: 'run', month, agent: way === 'agent' })));
       if (r && r.added.length) go('reports', list[0], { tab: 'run' });
     }
     async function setBudget() {

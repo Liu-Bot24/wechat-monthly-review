@@ -202,7 +202,7 @@ MRPages.reports = {
     const m = computed(() => byMonth.value[month.value] || null);
     const complete = computed(() => m.value?.data === 'complete');
     const hasReport = computed(() => !!m.value?.report);
-    const busy = computed(() => !!m.value?.job || !!(store.jobs.current && store.jobs.current.month === month.value) || store.jobs.queue.some(j => j.month === month.value));
+    const busy = computed(() => !!m.value?.job || runningJobs().some(j => j.month === month.value) || store.jobs.queue.some(j => j.month === month.value));
     const resumable = computed(() => monthResumable(st.value));
     const repairable = computed(() => monthRepairable(st.value));
     const tab = ref('result'), source = ref(null);
@@ -241,11 +241,12 @@ MRPages.reports = {
     }
     async function estimate() { if (await addJobs([{ kind: 'plan', month: month.value }])) setTab('run'); }
     async function start() {
-      if (m.value && m.value.report && !m.value.stale.length && !resumable.value && !repairable.value) {
-        const ok = await confirmBox('重新生成', `${monthLabel(month.value)} 已经有月报。重新生成会覆盖现有的月报文件；以前调用过、条件也没变的部分直接用缓存。继续吗？`);
-        if (!ok) return;
-      }
-      const r = await addJobs([{ kind: 'run', month: month.value }]);
+      const again = m.value && m.value.report && !m.value.stale.length && !resumable.value && !repairable.value;
+      const recorded = st.value?.status?.agent === undefined ? null : st.value.status.agent ? 'agent' : 'api';
+      const way = await chooseWay(again ? '重新生成' : resumable.value ? '继续生成' : repairable.value ? '补做失败的部分' : `生成 ${monthLabel(month.value)}`, {
+        recorded, body: again ? `${monthLabel(month.value)} 已经有月报。重新生成会覆盖现有的月报文件；以前调用过、条件也没变的部分直接用缓存。` : '' });
+      if (!way) return;
+      const r = await addJobs([{ kind: 'run', month: month.value, agent: way === 'agent' }]);
       if (r && r.added.length) setTab('run');
     }
     async function remove() {
@@ -376,9 +377,8 @@ MRPages.reports = {
     watch(month, async () => { lid.value = null; pane.value = 'toc'; st.value = null; pickTab(); await load(); loadStatus(); });
     watch(hasReport, (now, before) => { if (now !== before) load(); });
     // When this month's job ends, show its final state; a finished run opens the result.
-    watch(() => store.jobs.current?.id, (now, before) => {
-      const rec = before && store.jobs.history.find(r => r.id === before);
-      if (!rec || rec.month !== month.value) return;
+    onJobEnd(rec => {
+      if (rec.month !== month.value) return;
       loadStatus();
       if (rec.kind === 'run' && ['done', 'done-with-problems'].includes(rec.state)) loadOverview().then(() => { load(); setTab('result'); });
     });

@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from . import PROGRAM, ROOT, __version__, config, external, receipts, source, voice
 from .archive import Archive, TZ, ancestors, location_problem, media_id, media_kind, media_path, month_bounds, stamp
 from . import topic
-from .jobs import TOPIC_KINDS, Jobs, _mr, lock_holder
+from .jobs import LANES, TOPIC_KINDS, Jobs, _mr, lock_holder
 from .media import read_transcript, voice_pace
 from .pipeline import FINGERPRINT_LABELS, fingerprint, settle, system_prompts
 from .progress import read as read_json
@@ -211,8 +211,8 @@ def month_state(month, cutoff, fp, snap):
     if out['report'] and st and st.get('state') != 'running':
         reason = _source_changed(month, run_dir, st)
         out['stale'] = [reason] if reason else []
-    cur = snap['current']
-    if cur and cur.get('month') == month:
+    cur = next((snap[lane] for lane in LANES if (snap[lane] or {}).get('month') == month), None)
+    if cur:
         out['job'] = cur['kind']
     elif any(j.get('month') == month for j in snap['queue']):
         out['job'] = 'queued'
@@ -293,7 +293,7 @@ def delete_month(month: str, cache: int = 0):
     if not run_dir.is_dir():
         fail(404, '这个月份没有可以删除的文件')
     snap = jobs.snapshot()
-    if (snap['current'] or {}).get('month') == month or any(j.get('month') == month for j in snap['queue']) or lock_holder(s['output_root'], month):
+    if any((snap[lane] or {}).get('month') == month for lane in LANES) or any(j.get('month') == month for j in snap['queue']) or lock_holder(s['output_root'], month):
         fail(409, '这个月份有任务正在运行或排队。先停止任务或把它移出队列，再删除。')
     keep = {'cache', 'receipts.jsonl'} if not cache and (run_dir / 'cache').is_dir() else set()
     items = [p for p in run_dir.iterdir() if p.name not in keep]
@@ -354,7 +354,7 @@ def _resume_waiting():
             continue
         _resumed[month] = found['files']
         try:
-            add_jobs({'jobs': [{'kind': 'topic-run', 'topic': d.name} if d.parent != out else {'kind': 'run', 'month': month}]})
+            add_jobs({'jobs': [{'kind': 'topic-run', 'topic': d.name, 'agent': True} if d.parent != out else {'kind': 'run', 'month': month, 'agent': True}]})
         except HTTPException as e:
             print(f'{month} 的结果交齐了，但没能自动继续：{e.detail}', file=sys.stderr)
 
@@ -370,8 +370,17 @@ def get_jobs():
 
 @app.post('/api/jobs')
 def add_jobs(body: dict = Body(...)):
+    """jobs: as Jobs.add takes them; a run (of a month or a 专题) also says agent: true when the stages ticked in the
+    settings go to the external agent this time, else they are asked of their models. Such a run that has to wait for
+    another job first gets an estimate beside it that writes the agent's first tasks now (Jobs.LIGHT)."""
     items = body.get('jobs') or []
+    handed = config.load_settings().get('external_stages') or []
     for j in items:
+        if j.get('kind') in ('run', 'topic-run', 'topic-screen'):
+            agent = bool(j.pop('agent', False))
+            if agent and not handed:
+                fail(409, '设置里还没有勾选交给外部 Agent 的环节（设置 › 接口与模型 › 外部 Agent）')
+            j['api_only'] = not agent
         if j.get('kind') in TOPIC_KINDS:
             spec, state = _topic_state(_topic_dir(j.get('topic')), _topic_spec(j.get('topic')))
             todo = state['blockers']
@@ -391,11 +400,19 @@ def add_jobs(body: dict = Body(...)):
                 fail(409, '这些环节还没有选择模型：' + '、'.join(s['label'] for s in missing))
         if j.get('budget') is not None and (not isinstance(j['budget'], int) or j['budget'] < 0):
             fail(400, '预算要么不填，要么是正整数（0 表示这次不限）')
-    return {'added': jobs.add(items)}
+    first = []
+    if jobs.busy():
+        snap = jobs.snapshot()
+        running = {(snap[lane] or {}).get('month') for lane in LANES}
+        for j in items:
+            if j.get('kind') in ('run', 'topic-run', 'topic-screen') and not j['api_only'] and j['month'] not in running:
+                first.append({'kind': 'plan', 'month': j['month'], 'hand_out': True} if j['kind'] == 'run' else
+                             {'kind': 'topic-plan', 'topic': j['topic'], 'month': j['month'], 'title': j['title'], 'hand_out': True})
+    return {'added': jobs.add(first + items)}
 
 @app.post('/api/jobs/stop')
 def stop_jobs(body: dict = Body(default={})):
-    jobs.stop(bool(body.get('clear_queue')))
+    jobs.stop(bool(body.get('clear_queue')), body.get('id'))
     return jobs.snapshot()
 
 @app.post('/api/jobs/{job_id}/move')
@@ -487,8 +504,9 @@ def _topic_state(d, spec, refresh=False):
 
 def _topic_job(topic_id):
     snap, month = jobs.snapshot(), f'专题/{topic_id}'
-    if (snap['current'] or {}).get('month') == month:
-        return snap['current']['kind']
+    for lane in LANES:
+        if (snap[lane] or {}).get('month') == month:
+            return snap[lane]['kind']
     if any(j.get('month') == month for j in snap['queue']):
         return 'queued'
     return 'locked' if lock_holder(config.load_settings()['output_root'], month) else None

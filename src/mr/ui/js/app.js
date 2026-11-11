@@ -13,8 +13,8 @@ const App = {
       <div class="nav-sep" v-if="gi"></div>
       <a v-for="n in g" :key="n[0]" :href="'#/' + n[0]" :class="{on: navOn(n[0])}">
         <Icon :name="n[0]"/>{{ n[1] }}
-        <span class="badge" v-if="n[0] === 'run' && store.jobs.current"><span class="dot run"></span></span>
-        <span class="badge chip" v-if="n[0] === 'run' && !store.jobs.current && store.jobs.queue.length">{{ store.jobs.queue.length }}</span>
+        <span class="badge" v-if="n[0] === 'run' && cur"><span class="dot run"></span></span>
+        <span class="badge chip" v-if="n[0] === 'run' && !cur && store.jobs.queue.length">{{ store.jobs.queue.length }}</span>
       </a>
     </template>
     <div class="foot">版本 {{ MR.version }}<br><span v-if="!store.connected" style="color:var(--bad)">本机服务未响应</span></div>
@@ -32,6 +32,7 @@ const App = {
       </template>
       <span v-else class="muted">{{ cur.kind === 'plan' || cur.kind === 'topic-plan' ? '正在取数（不调用模型）…' : '正在启动…' }}</span>
       <span class="spacer"></span>
+      <span class="muted small" v-if="other">同时：{{ jobName(other) }}</span>
       <span class="muted small" v-if="store.jobs.queue.length">之后还有 {{ store.jobs.queue.length }} 个任务</span>
     </div>
   </div>
@@ -48,6 +49,15 @@ const App = {
     <div class="modal-head"><h2>{{ ui.dialog.title }}</h2></div>
     <div class="modal-body"><div style="white-space:pre-wrap">{{ ui.dialog.body }}</div>
       <label v-if="ui.dialog.check" class="row" style="margin-top:12px;cursor:pointer"><input type="checkbox" v-model="ui.dialog.checked">{{ ui.dialog.check }}</label>
+      <div v-if="ui.dialog.choices" class="col" style="gap:8px;margin-top:12px;align-items:stretch">
+        <label v-for="c in ui.dialog.choices" :key="c.value" class="row"
+               :style="{ alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '10px 12px', borderRadius: 'var(--radius)',
+                         border: '1px solid ' + (ui.dialog.choice === c.value ? 'var(--accent)' : 'var(--line)'),
+                         background: ui.dialog.choice === c.value ? 'var(--accent-bg)' : 'transparent' }">
+          <input type="radio" :value="c.value" v-model="ui.dialog.choice" style="margin-top:3px">
+          <div class="grow"><b>{{ c.label }}</b><div class="muted small" style="margin-top:2px">{{ c.hint }}</div></div>
+        </label>
+      </div>
       <div v-if="ui.dialog.type" style="margin-top:12px">
         <div class="small" style="margin-bottom:6px">请输入"{{ ui.dialog.type }}"确认：</div>
         <input class="input" style="width:100%" v-model="ui.dialog.typed" @keydown.enter.stop="answer(true)">
@@ -61,7 +71,9 @@ const App = {
     const page = computed(() => MRPages[route.page] ? route.page : 'overview');
     // 读取范围 belongs to the workspace it was opened from.
     const navOn = k => route.page === k || (route.page === 'chats' && k === (route.arg ? 'topics' : 'reports'));
-    const cur = computed(() => store.jobs.current);
+    // The bar shows the job calling models; an estimate beside it is named there, or shown when it runs alone.
+    const cur = computed(() => store.jobs.current || store.jobs.side);
+    const other = computed(() => store.jobs.current && store.jobs.side);
     const p = computed(() => cur.value?.progress);
     const curTitle = computed(() => !cur.value ? '' : jobName(cur.value));
     const stepText = computed(() => {
@@ -73,9 +85,9 @@ const App = {
     const allowed = () => !ui.dialog || !ui.dialog.type || ui.dialog.typed.trim() === ui.dialog.type;
     function answer(v) {
       if (v && !allowed()) return;          // the text has not been typed: neither the button nor Enter goes through
-      const d = ui.dialog; ui.dialog = null; d && d.resolve(v && d.check ? { checked: d.checked } : v);
+      const d = ui.dialog; ui.dialog = null; d && d.resolve(v && (d.check || d.choices) ? { checked: d.checked, choice: d.choice } : v);
     }
-    return { NAV, MR, route, store, ui, page, navOn, cur, p, curTitle, stepText, dlg, answer, allowed, go, goJob, fmtTok, fmtDur };
+    return { NAV, MR, route, store, ui, page, navOn, cur, other, p, curTitle, stepText, dlg, answer, allowed, go, goJob, jobName, fmtTok, fmtDur };
   },
 };
 

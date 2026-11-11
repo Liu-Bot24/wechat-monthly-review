@@ -1,6 +1,7 @@
 """mr: monthly review of the WeChat archive. Reads and writes the same user configuration as the window (see config.py).
 
   python -m mr plan 2026-10         extract and chunk without calling any model; print the plan
+  python -m mr plan 2026-10 --hand-out   also write the tasks of the stages an external agent does, ahead of the run
   python -m mr run 2026-10          run every stage; resumes from cache; stops at the budget
   python -m mr run 2026-10 --budget-tokens 3000000   this run's cap instead of the monthly budget in the settings
   python -m mr run 2026-10 --api-only                 stages handed to an external agent are asked of their models this time
@@ -9,8 +10,9 @@
   python -m mr asr --from 2026-01 --to 2026-08 [--chat 微信号…]
                                     transcribe voice clips of these months ahead of any report
 
-  python -m mr topic plan|screen|run <专题编号> [--budget-tokens N] [--api-only]
-                                    a 专题 made in the window: preview (no model calls), model screening only, or the whole run
+  python -m mr topic plan|screen|run <专题编号> [--budget-tokens N] [--api-only] [--hand-out]
+                                    a 专题 made in the window: preview (no model calls), model screening only, or the whole run;
+                                    plan --hand-out also writes the external agent's first tasks
 
   python -m mr check <环节文件夹…> [--wait [分钟]]
                                     for an external agent: are all its result files there, and would the run accept them
@@ -105,7 +107,7 @@ def select(settings, action, targets):
 def _more_coming(folder):
     """Whether 消息月报 may still write tasks into this folder (a stage's, or the handoff root): a month or 专题 is
     running, or is waiting for agents with every result in (it then goes on by itself), and that run has not yet
-    passed the point where this stage's tasks are written."""
+    passed the point where this stage's tasks are written; or a run that goes to the agent waits in the window's queue."""
     from . import external
     settings = config.load_settings()
     root, out = external.root(settings).resolve(), Path(settings['output_root'])
@@ -129,7 +131,11 @@ def _going(settings, out, external, wanted):
             going = found['tasks'] and found['results'] >= found['tasks']
         if going and wanted(progress.get('handoff_open')):          # the stage folders that run may yet write into
             return True
-    return False
+    try:
+        queued = json.loads((config.HOME / 'jobs.json').read_text(encoding='utf-8')).get('queue') or []
+    except (OSError, ValueError, AttributeError):
+        queued = []
+    return any(j.get('kind') in ('run', 'topic-run', 'topic-screen') and not j.get('api_only') for j in queued) and wanted(None)
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog='mr')
@@ -137,6 +143,8 @@ def main(argv=None):
     for name in ('plan', 'run', 'status'):
         s = sub.add_parser(name)
         s.add_argument('month')
+        if name == 'plan':
+            s.add_argument('--hand-out', action='store_true', help="also write the external agent's tasks")
         if name == 'run':
             s.add_argument('--budget-tokens', type=int)
             s.add_argument('--until', choices=['read', 'compose'], help='stop after this stage')
@@ -150,6 +158,7 @@ def main(argv=None):
     s.add_argument('id')
     s.add_argument('--budget-tokens', type=int)
     s.add_argument('--api-only', action='store_true')
+    s.add_argument('--hand-out', action='store_true', help="plan: also write the external agent's first tasks")
     s = sub.add_parser('check')
     s.add_argument('folder', nargs='+')
     s.add_argument('--wait', nargs='?', type=float, const=9.0, default=None, metavar='分钟')
@@ -188,7 +197,7 @@ def main(argv=None):
         from .topic import TopicRun
         run = TopicRun(ROOT, args.id, settings)
         with month_lock(settings['output_root'], run.month):
-            return run.plan() if args.action == 'plan' else run.run(budget_tokens=args.budget_tokens, until='screen' if args.action == 'screen' else None,
+            return run.plan(hand_out=args.hand_out) if args.action == 'plan' else run.run(budget_tokens=args.budget_tokens, until='screen' if args.action == 'screen' else None,
                                                                     api_only=args.api_only)
     if args.command == 'asr':
         from . import voice
@@ -196,7 +205,11 @@ def main(argv=None):
         with month_lock(settings['output_root'], 'asr'):
             return voice.run(settings, config.load_models(), args.first, args.last, args.chat)
     pipe = Pipeline(ROOT, args.month, settings)
-    if args.command == 'plan':
+    if args.command == 'plan' and args.hand_out:
+        from .jobs import month_lock
+        with month_lock(settings['output_root'], args.month):      # it writes task files the run of this month also writes
+            pipe.plan(hand_out=True)
+    elif args.command == 'plan':
         pipe.plan()
     elif args.command == 'status':
         pipe.status()

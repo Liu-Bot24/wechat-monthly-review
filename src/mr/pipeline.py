@@ -261,8 +261,9 @@ class Pipeline:
                 self.asr_stats['empty'] += 1
         return out
 
-    def plan(self, quiet=False):
-        """Extract and chunk without calling any model; write plan.json with counts and an estimate."""
+    def plan(self, quiet=False, hand_out=False):
+        """Extract and chunk without calling any model; write plan.json with counts and an estimate.
+        hand_out: also write the tasks of the stages an external agent reads, so it can start before the run."""
         self.prepare(transcribe=False)
         by_cat = defaultdict(Counter)
         for p in self.packets:
@@ -272,11 +273,11 @@ class Pipeline:
                           'est': sum(c['est_tokens'] for c in self.chunks if c['stage'] == stage)} for stage in ('read_a', 'scan_b')}
         est = chunks['read_a']['est'] + chunks['scan_b']['est']
         guess = estimate(est, self.settings, self.settings['output_root'], self.month, self.asr_stats['pending'])
-        # Stages an external agent reads are handed out as soon as their blocks are known, so the agent can start
-        # before any run. Not while voice clips wait to be transcribed: their text would change the blocks.
+        # Not while voice clips wait to be transcribed: their text would change the blocks.
         handed = Counter()
-        unset = [s for s in ('scan_b', 'read_a') if s in (self.settings.get('external_stages') or []) and not self.models_config['stages'].get(s)]
-        if self.settings.get('external_stages') and not self.asr_stats['pending']:
+        agent = hand_out and bool(self.settings.get('external_stages'))
+        unset = [s for s in ('scan_b', 'read_a') if agent and s in self.settings['external_stages'] and not self.models_config['stages'].get(s)]
+        if agent and not self.asr_stats['pending']:
             waiting = self._hand_out(self._models(None, False), [self._read_call(c) for c in self.chunks])
             handed = Counter(c['stage'] for c in self.chunks if c['key'] in waiting)
         budget = self.settings.get('budget_tokens')
@@ -289,7 +290,7 @@ class Pipeline:
                 'chunks': chunks, 'est_tokens': est, 'at_me': sum(len(p['at_me']) for p in self.packets),
                 'quote_me': sum(len(p['quote_me']) for p in self.packets),
                 'voice': {'total': self.asr_stats['total'], 'pending': self.asr_stats['pending']},
-                'external': {'handed': dict(handed), 'after_voice': bool(self.settings.get('external_stages') and self.asr_stats['pending']),
+                'external': {'handed': dict(handed), 'after_voice': bool(agent and self.asr_stats['pending']),
                              'no_model': [self.stage_label(s) for s in unset]},
                 'masks': dict(Counter(m['label'] for m in self.masks)), 'estimate': guess, 'budget': budget,
                 'over_budget': bool(budget and guess['tokens'] > budget)}
@@ -1078,6 +1079,7 @@ class Pipeline:
         est = sum(c['est_tokens'] for c in self.chunks)
         source_chats = dict(self.archive.active_chats(self.start, self.end))
         base = {'est_tokens': est, 'concurrency': self.settings['concurrency'], 'fingerprint': self.fingerprint(), 'budget': budget,
+                'agent': bool(models.external['stages']),         # how this run was started, for continuing it the same way
                 # The month's size in the archive at this run, per chat; a later import that changes it is the one reason
                 # to regenerate, and the per-chat counts let the window say what changed (source.py).
                 'source_messages': sum(source_chats.values()), 'source_chats': source_chats, 'source_read_at': round(started)}
