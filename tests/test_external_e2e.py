@@ -266,24 +266,29 @@ class ExternalEndToEndTest(unittest.TestCase):
         from mr.__main__ import main
         s = self.settings('分开', external_stages=['scan_b', 'read_a', 'recall_a'])
         root = external.root(s)
-        prompt = lambda *names: server.external_prompt({'stages': list(names)})['prompt']
-        check = lambda *names: main(['check', *[str(root / n) for n in names], '--wait', '0'])
+        prompt = lambda *names: server.external_prompt({'stages': list(names), 'owner': MONTH})['prompt']
+        check = lambda *names: main(['check', *[str(root / n / MONTH) for n in names], '--wait', '0'])
         with mock.patch('builtins.print'):
             self.assertEqual(self.run_once(s)[0], 4)
             hand = server._handoff(MONTH)
             self.assertEqual([st['name'] for st in hand['stages']], ['扫读', '精读', '查漏'])       # every stage handed out, with tasks or not yet
             scan, read, recall = hand['stages']
-            self.assertEqual((hand['tasks'], recall['tasks'], hand['folder']), (scan['tasks'] + read['tasks'], 0, str(root)))
+            self.assertEqual((hand['tasks'], recall['tasks'], hand['folder'], hand['owner']), (scan['tasks'] + read['tasks'], 0, str(root), MONTH))
             one = prompt('扫读')
-            self.assertIn(f'处理这个文件夹里的阅读任务：{root / "扫读"}\n', one)
-            self.assertIn(f'check "{root / "扫读"}" --wait', one)
+            self.assertIn(f'处理这个文件夹里的阅读任务：{root / "扫读" / MONTH}\n', one)
+            self.assertIn(f'check "{root / "扫读" / MONTH}" --wait', one)
             self.assertNotIn('精读', one)
             two = prompt('精读', '查漏')
-            self.assertIn(f'处理这些文件夹里的阅读任务：\n  {root / "精读"}\n  {root / "查漏"}\n', two)
-            self.assertIn(f'check "{root / "精读"}" "{root / "查漏"}" --wait', two)
+            self.assertIn(f'处理这些文件夹里的阅读任务：\n  {root / "精读" / MONTH}\n  {root / "查漏" / MONTH}\n', two)
+            self.assertIn(f'check "{root / "精读" / MONTH}" "{root / "查漏" / MONTH}" --wait', two)
             self.assertNotIn('扫读', two)
             with self.assertRaises(server.HTTPException):
                 prompt('没有这个环节')
+            for who in (None, '', '..', '2026-10/..', '专题/..', '专题/x'):
+                with self.assertRaises(server.HTTPException):
+                    server.external_prompt({'stages': ['扫读'], 'owner': who})
+            self.assertIn(str(root / '精读' / '专题' / '2026-11-12_101010') + '\n',
+                          server.external_prompt({'stages': ['精读'], 'owner': '专题/2026-11-12_101010'})['prompt'])
             self.assertEqual((check('扫读'), check('精读', '查漏')), (1, 1))
             self.assertEqual(play_agent_in(root, '扫读'), scan['tasks'])
             self.assertEqual((check('扫读'), check('精读', '查漏')), (0, 1))        # the scanning agent is done; the other has work
@@ -295,6 +300,58 @@ class ExternalEndToEndTest(unittest.TestCase):
             code, pipe = self.run_once(s)
             self.assertEqual((code, check('精读', '查漏')), (0, 0))
         self.assertEqual(set(pipe.external_used), {'scan_b', 'read_a', 'recall_a'})
+
+    def test_two_months_go_to_two_agents_at_once(self):
+        """September to one agent, October to another, both waiting at once: each prompt names its own month's folders
+        only, each agent's check lists and waits for its own month only, and neither is kept on by the other month."""
+        from mr import server
+        from mr.__main__ import main
+        sep = '2026-09'
+        msg = lambda n, day: (f'msg-{900 + n:024x}', f'2026-09-{day:02d} 10:{n % 60:02d}:00', '张三' if n % 2 else '我',
+                              'zhang' if n % 2 else 'me', '文本', '', [f'九月第 {n} 句，谈报价和交期'], [])
+        write_chat(self.archive, '01_私聊/张三', '张三', sep, 'zhang', 'me', [msg(i, 1 + i // 4) for i in range(12)])
+        s = self.settings('两个月', external_stages=['scan_b', 'read_a', 'recall_a'])
+        root, names = external.root(s), ['扫读', '精读', '查漏']
+        folders = lambda month: [root / n / month for n in names]
+        check = lambda month: main(['check', *map(str, folders(month)), '--wait', '0'])
+        def run(month):
+            pipe = Pipeline(ROOT, month, s, self.models)
+            self.addCleanup(pipe.archive.close)
+            with mock.patch('builtins.print'):
+                return pipe.run()
+        def agent(month):
+            """An agent given this month's prompt: it answers the tasks in the folders the prompt names."""
+            done = 0
+            for folder in folders(month):
+                stage = next(st['key'] for st in config.STAGES if st['label'] == folder.parent.name)
+                for task in sorted(folder.glob(f'**/{external.TASKS}/*.md')):
+                    text = task.read_text(encoding='utf-8')
+                    result = Path(text.split('\n', 1)[0][len('结果文件：'):])
+                    self.assertIn(folder, result.parents)                   # where its own task says, inside the month's folder
+                    if not result.exists():
+                        result.write_text(json.dumps(answer_for(stage, text.split('\n\n【用户消息】\n\n', 1)[1][:-1]), ensure_ascii=False), encoding='utf-8')
+                        done += 1
+            return done
+        with mock.patch('builtins.print'):
+            self.assertEqual((run(sep), run(MONTH)), (4, 4))
+            for month, other in ((sep, MONTH), (MONTH, sep)):
+                text = server.external_prompt({'stages': names, 'owner': month})['prompt']
+                self.assertIn(str(root / '精读' / month), text)
+                self.assertNotIn(other, text)
+                self.assertEqual(server._handoff(month)['owner'], month)
+            self.assertEqual((check(sep), check(MONTH)), (1, 1))
+            self.assertGreater(agent(sep), 0)
+            self.assertEqual((check(sep), check(MONTH)), (3, 1))           # September's agent waits for its second batch; October's has work
+            self.assertEqual(run(sep), 4)
+            self.assertGreater(agent(sep), 0)
+            self.assertEqual(run(sep), 0)
+            self.assertEqual(check(sep), 0)                                # done, whatever October still waits for
+            self.assertGreater(agent(MONTH), 0)
+            self.assertEqual((check(MONTH), check(sep)), (3, 0))           # October will go on; September's agent is not kept on by it
+            self.assertEqual(run(MONTH), 4)
+            self.assertGreater(agent(MONTH), 0)
+            self.assertEqual(run(MONTH), 0)
+            self.assertEqual(check(MONTH), 0)
 
     def test_tasks_kept_the_earlier_way_are_moved_to_their_stage(self):
         s = self.settings('旧布局', external_stages=['scan_b'])

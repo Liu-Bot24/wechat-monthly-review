@@ -325,18 +325,22 @@ def _handoff(month):
     counts = {st['name']: st for st in found['stages']}
     names = [external.MONTHLY[k][0] for k in config.STAGE_KEYS if k in (s.get('external_stages') or [])]
     names += [n for n in counts if n not in names]
-    return {'tasks': found['tasks'], 'results': found['results'], 'folder': str(external.root(s)),
+    return {'tasks': found['tasks'], 'results': found['results'], 'folder': str(external.root(s)), 'owner': month,
             'stages': [{'name': n, 'tasks': counts.get(n, {}).get('tasks', 0), 'results': counts.get(n, {}).get('results', 0)} for n in names]}
 
 @app.post('/api/external/prompt')
 def external_prompt(body: dict = Body(...)):
-    """The prompt for one agent: it covers the stage folders named (by the names the settings show), whichever they are."""
+    """The prompt for one agent: one month's or 专题's (owner) tasks in the stages named (by the names the settings
+    show), so that months handed to different agents stay apart."""
     known = {name for name, _ in external.MONTHLY.values()}
     names = [n for n in body.get('stages') or [] if n in known]
     if not names:
         fail(400, '请至少选择一个环节')
+    who = str(body.get('owner') or '')
+    if not (re.fullmatch(r'\d{4}-\d{2}', who) or who.startswith('专题/') and topic.valid_id(who[3:])):
+        fail(400, '没有指明是哪个月份或专题')
     base = external.root(config.load_settings())
-    return {'prompt': external.prompt([base / n for n in names], _mr())}
+    return {'prompt': external.prompt(external.owner_folders(base, names, who), _mr())}
 
 _resumed = {}       # month -> the results it was last continued for, so that one set of results continues it once
 

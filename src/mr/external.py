@@ -19,9 +19,10 @@ as they are, so what would be refused is found and redone by the agent and not c
 With --wait it also holds on while the program may write more tasks (a month that goes on once its results are in
 often has a second batch), so one prompt, given once, carries a month through.
 
-A prompt names stage folders, not a month's: whatever months and 专题 have tasks there, now or later, it covers them.
+A prompt is for one month or 专题: it names that one's folder in each stage picked, so months and 专题 handed to
+different agents at the same time stay apart, and an agent waits for that one's later batches only.
 """
-import json, re, time
+import json, os, re, time
 from pathlib import Path
 from . import checks, config
 
@@ -54,6 +55,10 @@ def options(settings, run_dir, stages=None, api_only=False, folders=None):
 
 def stage_dir(opts, stage):
     return opts['dirs'].get(stage) or opts['root'] / stage / opts['owner']
+
+def owner_folders(base, names, who):
+    """The folders a prompt for one month or 专题 names: its own in each of the stage folders named."""
+    return [Path(base) / name / Path(who) for name in names]
 
 def label(opts, stage):
     """The name of the folder under the root that holds this stage: what an agent given that stage is pointed at."""
@@ -145,7 +150,17 @@ def check_folder(base):
     """Every task in a handoff folder (or several) against its result: [(where, name, 'ok' | 'missing' | 'bad', reason)].
     Nothing is moved or changed; the result files are judged as the next run will judge them."""
     bases = _bases(base)
-    return [row for b in bases for row in _check_one(b, b.name + '\\' if len(bases) > 1 else '')]
+    if len(bases) == 1:
+        return _check_one(bases[0], '')
+    # Several folders: each task is named from where they part, which tells 扫读\2026-03 from 精读\2026-03.
+    try:
+        common = Path(os.path.commonpath([str(b.resolve()) for b in bases]))
+    except ValueError:          # on different drives
+        common = None
+    def prefix(b):
+        r = b.resolve()
+        return (str(r.relative_to(common)) if common and r != common else b.name) + '\\'
+    return [row for b in bases for row in _check_one(b, prefix(b))]
 
 def _check_one(base, prefix):
     rows = []
@@ -157,7 +172,8 @@ def _check_one(base, prefix):
             spec = {}
         json_mode = spec.get('json', True)
         result = stage_dir / RESULTS / (name + ('.json' if json_mode else '.md'))
-        where = prefix + stage_dir.relative_to(base).as_posix().replace('/', '\\')
+        rel = stage_dir.relative_to(base)
+        where = '\\'.join(p for p in (prefix.rstrip('\\'), str(rel) if rel.parts else '') if p)
         if not result.exists():
             rows.append((where, name, 'missing', ''))
             continue
@@ -180,7 +196,7 @@ def check_report(base, limit=60):
         some = [r for r in rows if r[2] == state]
         if some:
             lines.append(f'\n{title}：')
-            lines += [f'- {stage}\\{TASKS}\\{name}.md' + (f'：{why}' if why else '') for stage, name, _, why in some[:limit]]
+            lines += [f'- {stage + chr(92) if stage else ""}{TASKS}\\{name}.md' + (f'：{why}' if why else '') for stage, name, _, why in some[:limit]]
             if len(some) > limit:
                 lines.append(f'- ……还有 {len(some) - limit} 个')
     done = bool(rows) and n('ok') == len(rows)
@@ -226,7 +242,7 @@ def tally(base):
     return {'tasks': len(tasks), 'results': sum(any((t.parent.parent / RESULTS / (t.stem + s)).exists() for s in ('.json', '.md')) for t in tasks)}
 
 def prompt(paths, command=None):
-    """What the user gives an agent, once, for the stage folders it is to work through: one or several.
+    """What the user gives an agent, once, for the folders it is to work through (owner_folders): one or several.
     The text is the same every time; only the folders (and where this program is) differ."""
     paths = [str(p) for p in _bases(paths)]
     folders = ' '.join(f'"{p}"' for p in paths)

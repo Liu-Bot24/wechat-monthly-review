@@ -105,9 +105,11 @@ def select(settings, action, targets):
     return 0
 
 def _more_coming(folder):
-    """Whether 消息月报 may still write tasks into this folder (a stage's, or the handoff root): a month or 专题 is
-    running, or is waiting for agents with every result in (it then goes on by itself), and that run has not yet
-    passed the point where this stage's tasks are written; or a run that goes to the agent waits in the window's queue."""
+    """Whether 消息月报 may still write tasks into this folder (one month's or 专题's folder of a stage, as a prompt
+    names them; a whole stage's, or the handoff root, as earlier prompts did): that month or 专题 (any, for the wider
+    folders) is running, or is waiting for agents with every result in (it then goes on by itself), and that run has
+    not yet passed the point where this stage's tasks are written; or a run of it that goes to the agent waits in the
+    window's queue."""
     from . import external
     settings = config.load_settings()
     root, out = external.root(settings).resolve(), Path(settings['output_root'])
@@ -116,14 +118,18 @@ def _more_coming(folder):
     except ValueError:
         return False
     stage = rel.parts[0] if rel.parts else None             # None: the root, every stage
-    return _going(settings, out, external, lambda still: still is None or (stage in still if stage else bool(still)))
+    rest = rel.parts[1:]
+    who = None if not rest else '/'.join(rest[:2]) if rest[0] == '专题' else rest[0]      # None: every month and 专题
+    return _going(settings, out, external, lambda still: still is None or (stage in still if stage else bool(still)), who)
 
-def _going(settings, out, external, wanted):
+def _going(settings, out, external, wanted, who=None):
     from . import topic
     from .jobs import alive
     from .progress import read as read_progress
     runs = list(out.glob('[0-9][0-9][0-9][0-9]-[0-9][0-9]/progress.json')) + list(topic.root_dir(settings).glob('*/progress.json'))
     for path in runs:
+        if who is not None and path.parent.relative_to(out).as_posix() != who:
+            continue
         progress = read_progress(path) or {}
         going = progress.get('state') == 'running' and alive(progress.get('pid'))
         if not going and progress.get('state') == 'external-wait':
@@ -135,7 +141,8 @@ def _going(settings, out, external, wanted):
         queued = json.loads((config.HOME / 'jobs.json').read_text(encoding='utf-8')).get('queue') or []
     except (OSError, ValueError, AttributeError):
         queued = []
-    return any(j.get('kind') in ('run', 'topic-run', 'topic-screen') and not j.get('api_only') for j in queued) and wanted(None)
+    return any(j.get('kind') in ('run', 'topic-run', 'topic-screen') and not j.get('api_only') and who in (None, j.get('month'))
+               for j in queued) and wanted(None)
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog='mr')

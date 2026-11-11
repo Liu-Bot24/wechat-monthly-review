@@ -48,9 +48,10 @@ const ProgressView = {
 
 // Makes the prompt for one agent out of the stages ticked: tick the stages that go to the same agent, copy, send;
 // tick others for the next agent. stages: [{ name, tasks?, results? }], the stages handed out in the settings.
+// owner: the month or 专题/<id> whose tasks alone the prompt covers.
 const PromptMaker = {
   components: { Icon },
-  props: { stages: Array },
+  props: { stages: Array, owner: String },
   template: `
 <div>
   <div class="hand">
@@ -62,7 +63,7 @@ const PromptMaker = {
   </div>
   <div class="row wrap" style="margin:8px 0 6px">
     <button class="btn sm primary" :disabled="!picked.length || !prompt" @click="copy"><Icon name="copy"/>复制提示词</button>
-    <span class="muted small">勾选要交给同一个 Agent 的环节，复制，发给它；换一组勾选，再复制，发给下一个 Agent。每个 Agent 发一次：它负责的环节之后再有任务，会接着做。</span>
+    <span class="muted small">提示词只包括{{ owner && owner.startsWith('专题/') ? '这个专题' : '这个月' }}的任务，其他月份和专题可以交给别的 Agent。勾选要交给同一个 Agent 的环节，复制，发给它；换一组勾选，再复制，发给下一个 Agent。每个 Agent 发一次：这里之后再有任务，它会接着做。</span>
   </div>
   <pre class="log" style="margin:0;max-height:220px">{{ picked.length ? prompt : '还没有勾选环节。' }}</pre>
 </div>`,
@@ -71,12 +72,13 @@ const PromptMaker = {
     const picked = ref(names());            // every stage to begin with: one agent doing them all
     const prompt = ref('');
     watch(() => names().join('|'), () => { picked.value = picked.value.filter(n => names().includes(n)); if (!picked.value.length) picked.value = names(); });
-    watch(picked, async now => {
-      const chosen = names().filter(n => now.includes(n));      // in the order the run goes through them
-      if (!chosen.length) { prompt.value = ''; return; }
+    watch([picked, () => props.owner], async () => {
+      const chosen = names().filter(n => picked.value.includes(n));      // in the order the run goes through them
+      if (!chosen.length || !props.owner) { prompt.value = ''; return; }
+      const who = props.owner;
       try {
-        const r = await api('/api/external/prompt', { method: 'POST', body: { stages: chosen } });
-        if (chosen.join('|') === names().filter(n => picked.value.includes(n)).join('|')) prompt.value = r.prompt;
+        const r = await api('/api/external/prompt', { method: 'POST', body: { stages: chosen, owner: who } });
+        if (who === props.owner && chosen.join('|') === names().filter(n => picked.value.includes(n)).join('|')) prompt.value = r.prompt;     // still what is shown
       } catch (e) { fail(e); }
     }, { immediate: true, deep: true });
     async function copy() {
@@ -95,7 +97,7 @@ const ExternalWait = {
 <div class="banner info" style="display:block">
   <div class="row" style="gap:10px;align-items:flex-start"><Icon name="info"/><div class="grow">{{ message }}</div>
     <span class="chip" :class="h.results >= h.tasks ? 'ok' : 'info'">已交回 {{ h.results }} / {{ h.tasks }}</span></div>
-  <PromptMaker :stages="h.stages" style="margin-top:10px"/>
+  <PromptMaker :stages="h.stages" :owner="h.owner" style="margin-top:10px"/>
   <div class="row wrap" style="margin-top:10px">
     <button class="btn sm" @click="openPath(h.folder)"><Icon name="folder"/>打开交接文件夹</button>
     <span class="spacer"></span><slot></slot>
