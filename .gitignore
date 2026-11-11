@@ -1,0 +1,26 @@
+# Local-only
+DEVELOPMENT_LOG.md
+CLAUDE.local.md
+AGENTS.md
+.claude/
+# Planning and agent orchestration notes: kept locally, never published
+docs/
+spec/工作流规范.md
+spec/月报模板.md
+
+# Run outputs and caches never belong in the repository
+runs/
+cache/
+memory/
+reports/
+*.sqlite
+*.jsonl
+
+# Installer build (tools\build.ps1)
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
