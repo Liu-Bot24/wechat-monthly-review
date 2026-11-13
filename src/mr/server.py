@@ -1079,24 +1079,32 @@ def set_key(name: str, body: dict = Body(...)):
         config.credential_delete(name)
     return get_models()
 
-def probe_provider(name, p, timeout=15):
-    """Reach the provider and list its models; says what went wrong in words a user can act on."""
-    import openai
+def probe_provider(name, p, timeout=15, key=None):
+    """Reach the provider and list its models; says what went wrong in words a user can act on.
+    key: one typed in the form and not saved yet; otherwise the saved one is read."""
+    import anthropic, openai
+    from . import anthropic_messages
+    from .llm import new_client
     started = time.time()
+    if key is None:
+        try:
+            key = config.resolve_key(name, p)
+        except config.ConfigError as e:
+            return {'ok': False, 'state': 'key', 'message': str(e)}
     try:
-        key = config.resolve_key(name, p)
-    except config.ConfigError as e:
-        return {'ok': False, 'state': 'key', 'message': str(e)}
-    try:
-        client = openai.OpenAI(base_url=p['base_url'], api_key=key, timeout=timeout, max_retries=0)
-        ids = sorted(x.id for x in client.models.list())
+        client = new_client(p, key, timeout)
+        ids = anthropic_messages.models(client) if p['api'] == 'anthropic' else sorted(x.id for x in client.models.list())
         return {'ok': True, 'state': 'ok', 'models': ids, 'ms': int((time.time() - started) * 1000)}
-    except openai.AuthenticationError:
+    except anthropic.NotFoundError:
+        # Not every service with this interface lists its models; reaching it is all that can be told here.
+        return {'ok': True, 'state': 'ok', 'models': [], 'ms': int((time.time() - started) * 1000),
+                'note': '连上了，但这个接口不提供模型列表，所以没能用它确认密钥。模型名需要手动填写，添加模型后点"测试已保存的模型"确认能调用。'}
+    except (openai.AuthenticationError, anthropic.AuthenticationError):
         return {'ok': False, 'state': 'auth', 'message': '密钥无效或已过期'}
-    except openai.APIConnectionError:
+    except (openai.APIConnectionError, anthropic.APIConnectionError):
         hint = '请确认这台电脑上的服务已经启动' if 'localhost' in p['base_url'] or '127.0.0.1' in p['base_url'] else '请检查地址和网络'
         return {'ok': False, 'state': 'down', 'message': f'连不上 {p["base_url"]}：{hint}'}
-    except openai.APIStatusError as e:
+    except (openai.APIStatusError, anthropic.APIStatusError) as e:
         return {'ok': False, 'state': 'error', 'message': f'接口返回 {e.status_code}：{str(e)[:200]}'}
     except Exception as e:
         return {'ok': False, 'state': 'error', 'message': f'{type(e).__name__}: {str(e)[:200]}'}
@@ -1109,13 +1117,7 @@ def probe(body: dict = Body(...)):
     if body.get('data'):
         p = config._clean_provider(body['data'])
         if body.get('secret'):
-            p = {**p, 'key': {'type': 'inline'}}
-            import openai
-            try:
-                client = openai.OpenAI(base_url=p['base_url'], api_key=body['secret'], timeout=15, max_retries=0)
-                return {'ok': True, 'state': 'ok', 'models': sorted(x.id for x in client.models.list())}
-            except Exception as e:
-                return {'ok': False, 'state': 'error', 'message': f'{type(e).__name__}: {str(e)[:200]}'}
+            return probe_provider(name, p, key=body['secret'])
     elif name in m['providers']:
         p = m['providers'][name]
     else:
@@ -1143,8 +1145,8 @@ def delete_model(name: str):
 @app.post('/api/models/{name}/test')
 def test_model(name: str):
     """One very small real call, to show the model answers with these parameters."""
-    import openai
-    from .llm import Models
+    import anthropic, openai
+    from .llm import caller, new_client
     m = config.load_models()
     if name not in m['models']:
         fail(404, '没有这个模型')
@@ -1154,13 +1156,12 @@ def test_model(name: str):
         return probe_provider(spec['provider'], p)
     started = time.time()
     try:
-        client = openai.OpenAI(base_url=p['base_url'], api_key=config.resolve_key(spec['provider'], p), timeout=120, max_retries=0)
-        call = Models._responses if p['api'] == 'responses' else Models._chat
-        text, u, finish = call(client, spec, '只回复一个 JSON 对象。', '请回复 {"ok": true}', True)
+        client = new_client(p, config.resolve_key(spec['provider'], p), 120)
+        text, u, finish = caller(p['api'])(client, spec, '只回复一个 JSON 对象。', '请回复 {"ok": true}', True)
         return {'ok': finish == 'stop', 'state': 'ok', 'answer': text[:200], 'usage': u, 'ms': int((time.time() - started) * 1000)}
     except config.ConfigError as e:
         return {'ok': False, 'state': 'key', 'message': str(e)}
-    except openai.APIError as e:
+    except (openai.APIError, anthropic.APIError) as e:
         return {'ok': False, 'state': 'error', 'message': f'{type(e).__name__}: {str(e)[:300]}'}
 
 @app.put('/api/stages')

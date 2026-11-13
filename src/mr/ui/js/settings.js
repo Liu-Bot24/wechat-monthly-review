@@ -1,5 +1,6 @@
 /* 设置: providers, models and stage assignment; general, advanced, the configuration files and diagnostics. */
 const EFFORTS = [['', '不设置'], ['minimal', 'minimal'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh']];
+const ANTHROPIC_EFFORTS = [['', '不设置'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];   // sent as output_config.effort
 const NEEDS = { text: ['文本', ''], vision: ['需要看图', 'info'], audio: ['需要语音转写接口', 'accent'] };
 const pickFolder = async (initial) => window.pywebview?.api?.pick_folder ? await window.pywebview.api.pick_folder(initial || '') : null;
 const pickFile = async (initial) => window.pywebview?.api?.pick_file ? await window.pywebview.api.pick_file(initial || '') : null;
@@ -18,7 +19,7 @@ const ProviderDialog = {
     <label class="k">接口地址</label><input class="input" v-model.trim="f.base_url" placeholder="https://api.openai.com/v1">
     <label class="k">协议</label>
     <select class="input" v-model="f.api"><option v-for="(v, k) in apis" :key="k" :value="k">{{ v }}</option></select>
-    <div class="help">GPT-5 以后的 OpenAI 模型用 Responses；多数兼容服务用 Chat Completions；Whisper 类语音识别服务选语音转写。</div>
+    <div class="help">GPT-5 以后的 OpenAI 模型用 Responses；多数兼容服务用 Chat Completions；Claude 和提供 Anthropic 格式接口的服务用 Anthropic Messages（地址填到 /v1 之前，带上 /v1 也可以）；Whisper 类语音识别服务选语音转写。</div>
     <label class="k">API Key</label>
     <div class="seg"><button :class="{on: f.key.type === 'none'}" @click="f.key.type = 'none'">不需要</button><button :class="{on: f.key.type === 'credential'}" @click="f.key.type = 'credential'">需要</button></div>
     <template v-if="f.key.type === 'credential'">
@@ -27,7 +28,8 @@ const ProviderDialog = {
     </template>
   </div>
   <div class="banner" :class="test.ok ? 'ok' : 'bad'" v-if="test" style="margin:14px 0 0">
-    <div class="grow" v-if="test.ok">连接成功{{ test.ms ? '（' + test.ms + ' 毫秒）' : '' }}，接口提供 {{ test.models.length }} 个模型：{{ test.models.slice(0, 12).join('、') }}{{ test.models.length > 12 ? ' …' : '' }}</div>
+    <div class="grow" v-if="test.ok && test.note">{{ test.note }}</div>
+    <div class="grow" v-else-if="test.ok">连接成功{{ test.ms ? '（' + test.ms + ' 毫秒）' : '' }}，接口提供 {{ test.models.length }} 个模型：{{ test.models.slice(0, 12).join('、') }}{{ test.models.length > 12 ? ' …' : '' }}</div>
     <div class="grow" v-else>{{ test.message }}</div>
   </div>
   <template #foot>
@@ -81,7 +83,7 @@ const ModelDialog = {
     <div class="help" v-if="remote.length">接口提供 {{ remote.length }} 个模型，可以在输入框中选择。</div>
     <template v-if="!isAudio">
       <label class="k">推理强度</label>
-      <div class="seg"><button v-for="e in EFFORTS" :key="e[0]" :class="{on: effort === e[0]}" @click="effort = e[0]">{{ e[1] }}</button></div>
+      <div class="seg"><button v-for="e in efforts" :key="e[0]" :class="{on: effort === e[0]}" @click="effort = e[0]">{{ e[1] }}</button></div>
       <label class="k">支持图片</label><label class="check"><input type="checkbox" v-model="f.vision">可以用于"看图"环节</label>
     </template>
     <label class="k">其他参数</label><textarea class="input" rows="3" v-model="paramsText" :class="{bad: paramsError}" placeholder="可选，JSON 对象"></textarea>
@@ -126,6 +128,7 @@ const ModelDialog = {
     const paramsText = ref(Object.keys(params).length ? JSON.stringify(params) : '');
     const remote = ref([]), listing = ref(false), test = ref(null), testing = ref(false);
     const isAudio = computed(() => props.providers[f.provider]?.api === 'audio');
+    const efforts = computed(() => props.providers[f.provider]?.api === 'anthropic' ? ANTHROPIC_EFFORTS : EFFORTS);
     const paramsError = computed(() => {
       if (!paramsText.value.trim()) return '';
       try { const v = JSON.parse(paramsText.value); return v && typeof v === 'object' && !Array.isArray(v) ? '' : '要写成 JSON 对象'; } catch (e) { return 'JSON 格式不对：' + e.message; }
@@ -145,7 +148,7 @@ const ModelDialog = {
     }
     async function save() {
       const p = paramsText.value.trim() ? JSON.parse(paramsText.value) : {};
-      if (effort.value && !isAudio.value) p.reasoning_effort = effort.value;
+      if (effort.value && !isAudio.value && efforts.value.some(e => e[0] === effort.value)) p.reasoning_effort = effort.value;   // one this 协议 takes
       const data = { provider: f.provider, model: f.model, params: p, vision: isAudio.value ? false : f.vision, note: f.note,
                      price: local.value ? { local: true } : isAudio.value ? {} : { input: price.input, cached_input: price.cached_input, output: price.output, currency: price.currency } };
       try {
@@ -154,7 +157,7 @@ const ModelDialog = {
         emit('saved', r);
       } catch (e) { fail(e); }
     }
-    return { f, price, local, effort, paramsText, paramsError, remote, listing, test, testing, isAudio, EFFORTS, listRemote, runTest, save };
+    return { f, price, local, effort, paramsText, paramsError, remote, listing, test, testing, isAudio, efforts, listRemote, runTest, save };
   },
 };
 

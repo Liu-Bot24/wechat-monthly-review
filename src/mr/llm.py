@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 import openai
-from . import external as ext
+from . import anthropic_messages as am, external as ext
 from .config import call_spec, fallbacks_for, resolve_key
 
 class BudgetStop(Exception):
@@ -18,6 +18,16 @@ class _Failed(Exception):
     def __init__(self, error):
         super().__init__(str(error))
         self.error = error
+
+def new_client(provider, key, timeout):
+    """A client for the provider's 协议: Anthropic Messages, or one of OpenAI's."""
+    if provider.get('api') == 'anthropic':
+        return am.client(provider['base_url'], key, timeout)
+    return openai.OpenAI(api_key=key, base_url=provider['base_url'], timeout=timeout, max_retries=0)
+
+def caller(api):
+    """The function that makes one call on this 协议: (client, spec, system, user, json_mode, images) -> (text, usage, finish)."""
+    return {'responses': Models._responses, 'anthropic': am.ask}.get(api, Models._chat)
 
 class Models:
     def __init__(self, models_config, run_dir, budget_tokens=None, systems=None, progress=None, external=None):
@@ -58,7 +68,7 @@ class Models:
     def _client(self, provider_name):
         if provider_name not in self.clients:
             p = self.config['providers'][provider_name]
-            self.clients[provider_name] = openai.OpenAI(api_key=resolve_key(provider_name, p), base_url=p['base_url'], timeout=900, max_retries=0)
+            self.clients[provider_name] = new_client(p, resolve_key(provider_name, p), 900)
         return self.clients[provider_name]
 
     def _path(self, stage, key, system=None):
@@ -324,8 +334,7 @@ class Models:
         for attempt in range(3):
             started = time.time()
             try:
-                text, u, finish = (self._responses if api == 'responses' else self._chat)(
-                    client, spec, system, user, json_mode, images)
+                text, u, finish = caller(api)(client, spec, system, user, json_mode, images)
                 with self.lock:
                     self.used += u['prompt_tokens'] + u['completion_tokens']
                     self.calls += 1
@@ -342,12 +351,12 @@ class Models:
                     if validate:
                         validate(answer)
                 return answer
-            except (openai.APIError, json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
+            except (openai.APIError, *am.ERRORS, json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
                 last_error = e
                 self._receipt(**base, attempt=attempt, seconds=round(time.time() - started, 1),
                               status='error', error=f'{type(e).__name__}: {str(e)[:300]}')
                 self._event(f'{stage}：{name} 第 {attempt + 1} 次调用失败（{type(e).__name__}），{"稍后重试" if attempt < 2 else "不再用它"}')
-                if isinstance(e, (openai.AuthenticationError, openai.PermissionDeniedError)):
+                if isinstance(e, (openai.AuthenticationError, openai.PermissionDeniedError, *am.AUTH_ERRORS)):
                     break    # a wrong key does not get better by retrying
                 if attempt < 2:
                     time.sleep(5 * (attempt + 1))
