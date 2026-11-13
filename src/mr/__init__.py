@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 
 # FROZEN: running from the installed program (PyInstaller) rather than from the repository.
 # ROOT holds prompts/ and spec/: the repository, or the bundle folder the installer puts next to the executables.
