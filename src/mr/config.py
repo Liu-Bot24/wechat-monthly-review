@@ -74,7 +74,7 @@ STAGE_KEYS = [s['key'] for s in STAGES]
 EXTERNAL_STAGES = [s['key'] for s in STAGES if s['needs'] == 'text']
 # Fallbacks are shared by every stage: when a stage's model keeps failing, the call is asked again of these, in order.
 FALLBACK_SLOTS = 2
-APIS = {'responses': 'OpenAI Responses', 'chat': 'OpenAI Chat Completions', 'audio': '语音转写（OpenAI 兼容）'}
+APIS = {'responses': 'OpenAI Responses', 'chat': 'OpenAI Chat Completions', 'anthropic': 'Anthropic Messages', 'audio': '语音转写（OpenAI 兼容）'}
 _NAME = re.compile(r'^[^\s/\\:*?"<>|]{1,60}$')
 
 
