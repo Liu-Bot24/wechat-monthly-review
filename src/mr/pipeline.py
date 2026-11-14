@@ -525,7 +525,10 @@ class Pipeline:
         return results, failures
 
     def at_me(self, models):
-        blocks, wanted = [], []
+        """{sid: item} for the @我 messages, asked 25 at a time, and {label: reason} for those that could not be answered.
+        An answer that leaves some out is kept; those are asked again one by one. One still unanswered is reported as a
+        failed part (made up later with 补做失败的部分) instead of stopping the month."""
+        blocks, wanted, label = {}, [], {}
         for p in self.packets:
             pos = {l['sid']: i for i, l in enumerate(p['lines'])}
             for sid in p['at_me']:
@@ -534,24 +537,36 @@ class Pipeline:
                 for l in lines:
                     if l['sid'] == sid:
                         l['text'] = '【@我】' + l['text']
-                blocks.append(f'=== 会话：{p["name"]}（{p["category"]}）\n' + render(lines))
+                blocks[sid] = f'=== 会话：{p["name"]}（{p["category"]}）\n' + render(lines)
+                label[sid] = f'@我：{p["name"]} {stamp(p["lines"][i]["ts"]):%m-%d %H:%M}'
                 wanted.append(sid)
         if not wanted:
             self._p('skip', 'at_me', '本月没有 @我')
-            return {}
-        items = {}
-        self._p('begin', 'at_me', (len(wanted) + 24) // 25, f'@我 {len(wanted)} 条')
-        for start in range(0, len(wanted), 25):
-            part_ids, part = wanted[start:start + 25], blocks[start:start + 25]
-            key = 'at-' + digest('\n\n'.join(part))
-            answer = models.call('at_me', key, self.system['at_me'], '\n\n'.join(part), validate=checks.make('at_me', wanted=part_ids))
+            return {}, {}
+        items, failures = {}, {}
+        def ask(part_ids, partial):
+            text = '\n\n'.join(blocks[s] for s in part_ids)
+            answer = models.call('at_me', 'at-' + digest(text), self.system['at_me'], text,
+                                 validate=checks.make('at_me', wanted=part_ids, partial=partial))
             for it in answer['items']:
                 for s in ids(it.get('msg_id')):
                     if s in part_ids:
                         items[s] = dict(it, msg_id=s)
-            self._p('tick', 'at_me')
-        self._p('end', 'at_me')
-        return items
+        self._p('begin', 'at_me', (len(wanted) + 24) // 25, f'@我 {len(wanted)} 条')
+        for start in range(0, len(wanted), 25):
+            part_ids = wanted[start:start + 25]
+            try:
+                ask(part_ids, True)
+            except RuntimeError as e:            # every attempt with the stage's model and the fallbacks failed
+                self._say(f'  @我 第 {start // 25 + 1} 批失败，逐条再问：{str(e)[:120]}')
+            for sid in [s for s in part_ids if s not in items]:
+                try:
+                    ask([sid], False)
+                except RuntimeError as e:
+                    failures[label[sid]] = str(e)[:300]
+            self._p('tick', 'at_me', ok=not any(label[s] in failures for s in part_ids))
+        self._p('end', 'at_me', message=f'@我 {len(items)} 条' + (f'，{len(failures)} 条没有问到' if failures else ''))
+        return items, failures
 
     # ---------- material ----------
     def material(self, results):
@@ -1104,7 +1119,8 @@ class Pipeline:
             self.material(results)
             failures.update(self.verify(models))
             failures.update(self.vision(models, results))
-            at_items = self.at_me(models)
+            at_items, f_at = self.at_me(models)
+            failures.update(f_at)
             main, details, order, f2 = self.compose(models, at_items)
             failures.update(f2)
         except BudgetStop:
