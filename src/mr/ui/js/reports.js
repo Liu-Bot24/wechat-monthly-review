@@ -114,9 +114,9 @@ MRPages.reports = {
       <a v-for="m in list" :key="m.month" :href="'#/reports/' + m.month" :class="{on: m.month === month}">
         <span class="grow" style="min-width:0">
           <span style="display:block">{{ monthLabel(m.month) }}</span>
-          <span class="muted small" style="display:block;font-weight:400" v-if="!m.report">{{ m.job === 'queued' ? '排队中' : m.job ? '运行中' : m.estimate ? '已估算，未生成' : '还没有生成' }}</span>
+          <span class="muted small" style="display:block;font-weight:400" v-if="!m.report">{{ m.job === 'queued' ? '排队中' : m.job === 'paused' ? '已暂停' : m.job ? '运行中' : m.estimate ? '已估算，未生成' : '还没有生成' }}</span>
         </span>
-        <span class="dot" :class="m.job ? 'run' : m.report ? (stateKind(m.state) === 'ok' && !m.stale.length ? 'ok' : 'warn') : ''"></span></a>
+        <span class="dot" :class="m.job === 'paused' ? 'warn' : m.job ? 'run' : m.report ? (stateKind(m.state) === 'ok' && !m.stale.length ? 'ok' : 'warn') : ''"></span></a>
       <select class="input sm" style="margin:10px 4px 0;width:calc(100% - 8px)" v-if="others.length" @change="e => { const v = e.target.value; e.target.value = ''; if (v) go('reports', v, { tab: 'run' }); }">
         <option value="">生成其他月份…</option>
         <option v-for="m in others" :key="m" :value="m">{{ monthLabel(m) }}</option>
@@ -127,7 +127,7 @@ MRPages.reports = {
       <template v-if="month">
       <div class="rtools">
         <b>{{ monthLabel(month) }}</b>
-        <span class="chip" v-if="m && m.job" :class="m.job === 'queued' ? 'info' : 'accent'">{{ m.job === 'queued' ? '排队中' : m.job === 'plan' ? '估算中' : '运行中' }}</span>
+        <span class="chip" v-if="m && m.job" :class="{ queued: 'info', paused: 'warn' }[m.job] || 'accent'">{{ { queued: '排队中', paused: '已暂停', plan: '估算中' }[m.job] || '运行中' }}</span>
         <span class="chip" v-else-if="m && m.state" :class="stateKind(m.state)">{{ stateText(m.state) }}</span>
         <span class="chip warn click" v-if="m && m.stale.length" role="button" title="看看变了什么，再决定要不要重新生成" @click="source = month">数据源有变化</span>
         <span class="muted small" v-if="report && report.status">{{ fmtTok(report.status.tokens_used) }} token</span>

@@ -26,7 +26,7 @@ MRPages.voice = {
         <option v-for="c in chatOptions" :key="c.chat" :value="c.chat">{{ c.name }}（{{ c.n }} 条）</option>
       </select>
       <span class="spacer"></span>
-      <button class="btn" @click="load"><Icon name="refresh"/>刷新</button>
+      <button class="btn" @click="load()"><Icon name="refresh"/>刷新</button>
       <button class="btn danger" v-if="running" @click="stop"><Icon name="stop"/>停止</button>
       <button class="btn primary" v-else :disabled="!data || !data.pending || busy" @click="start"><Icon name="play"/>转写待处理的 {{ data ? data.pending : '' }} 条</button>
     </div>
@@ -89,22 +89,33 @@ MRPages.voice = {
       const s = filter.value.trim();
       return s ? items.filter(i => (i.text || '').includes(s) || i.name.includes(s)) : items;
     });
+    // Each answer is shown only if it is still the newest asked for, so a slow one for an earlier range never replaces a
+    // later one. The spinner shows only while a different range or filter is loading; the refresh during a transcription
+    // updates the rows in place, keeping as many as are already shown.
+    let seq = 0, refreshing = false;
+    const query = () => [first.value, last.value, chat.value, state.value].join('|');
     async function load(append) {
       if (first.value > last.value) return toast('起始月份不能晚于结束月份', 'warn');
       saveLocal('voice.first', first.value); saveLocal('voice.last', last.value);
-      loading.value = !append;
+      const key = query(), mine = ++seq;
+      const same = data.value && data.value.key === key;
+      if (!same) loading.value = true;
+      const offset = append && same ? data.value.items.length : 0;
+      const limit = !append && same ? Math.max(200, data.value.items.length) : 200;
       try {
-        const qs = new URLSearchParams({ first: first.value, last: last.value, chat: chat.value, state: state.value, offset: append ? data.value.items.length : 0, limit: 200 });
+        const qs = new URLSearchParams({ first: first.value, last: last.value, chat: chat.value, state: state.value, offset, limit });
         const r = await api('/api/voice?' + qs);
-        if (append) r.items = data.value.items.concat(r.items);
-        data.value = r;
-        if (!chat.value) {
-          const n = {};
-          r.items.forEach(i => { n[i.chat] = n[i.chat] || { chat: i.chat, name: i.name, n: 0 }; n[i.chat].n++; });
-          chatOptions.value = Object.values(n).sort((a, b) => b.n - a.n);
-        }
-      } catch (e) { fail(e); }
-      loading.value = false;
+        if (mine !== seq) return;
+        if (offset) r.items = data.value.items.concat(r.items);
+        data.value = { ...r, key };
+        if (!chat.value) chatOptions.value = r.chats;
+      } catch (e) { if (mine === seq) fail(e); }
+      if (mine === seq) loading.value = false;
+    }
+    async function refresh() {
+      if (refreshing || loading.value) return;
+      refreshing = true;
+      try { await load(); } finally { refreshing = false; }
     }
     async function checkService() { svc.value = null; try { svc.value = await api('/api/voice/service'); } catch (e) { svc.value = { ok: false, message: e.message }; } }
     async function loadLastProgress() {
@@ -122,7 +133,7 @@ MRPages.voice = {
     async function stop() { try { store.jobs = await api('/api/jobs/stop', { method: 'POST', body: {} }); } catch (e) { fail(e); } }
     watch([first, last, chat, state], () => load());
     watch(running, (now, before) => { if (before && !now) { load(); loadLastProgress(); } });
-    let refresher = setInterval(() => { if (running.value) load(); }, 15000);
+    let refresher = setInterval(() => { if (running.value) refresh(); }, 15000);
     onBeforeUnmount(() => clearInterval(refresher));
     onMounted(() => { load(); checkService(); loadLastProgress(); });
     return { first, last, chat, state, filter, data, loading, svc, playing, chatOptions, running, busy, prog, failures, shown,

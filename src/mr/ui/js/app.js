@@ -14,7 +14,7 @@ const App = {
       <a v-for="n in g" :key="n[0]" :href="'#/' + n[0]" :class="{on: navOn(n[0])}">
         <Icon :name="n[0]"/>{{ n[1] }}
         <span class="badge" v-if="n[0] === 'run' && cur"><span class="dot run"></span></span>
-        <span class="badge chip" v-if="n[0] === 'run' && !cur && store.jobs.queue.length">{{ store.jobs.queue.length }}</span>
+        <span class="badge chip" v-if="n[0] === 'run' && !cur && waiting">{{ waiting }}</span>
       </a>
     </template>
     <div class="foot">版本 {{ MR.version }}<br><span v-if="!store.connected" style="color:var(--bad)">本机服务未响应</span></div>
@@ -33,7 +33,7 @@ const App = {
       <span v-else class="muted">{{ cur.kind === 'plan' || cur.kind === 'topic-plan' ? '正在取数（不调用模型）…' : '正在启动…' }}</span>
       <span class="spacer"></span>
       <span class="muted small" v-if="other">同时：{{ jobName(other) }}</span>
-      <span class="muted small" v-if="store.jobs.queue.length">之后还有 {{ store.jobs.queue.length }} 个任务</span>
+      <span class="muted small" v-if="waiting">之后还有 {{ waiting }} 个任务</span>
     </div>
   </div>
   <main class="main">
@@ -74,6 +74,7 @@ const App = {
     // The bar shows the job calling models; an estimate beside it is named there, or shown when it runs alone.
     const cur = computed(() => store.jobs.current || store.jobs.side);
     const other = computed(() => store.jobs.current && store.jobs.side);
+    const waiting = computed(() => store.jobs.queue.filter(j => !j.paused).length);     // paused ones start only when resumed
     const p = computed(() => cur.value?.progress);
     const curTitle = computed(() => !cur.value ? '' : jobName(cur.value));
     const stepText = computed(() => {
@@ -87,7 +88,7 @@ const App = {
       if (v && !allowed()) return;          // the text has not been typed: neither the button nor Enter goes through
       const d = ui.dialog; ui.dialog = null; d && d.resolve(v && (d.check || d.choices) ? { checked: d.checked, choice: d.choice } : v);
     }
-    return { NAV, MR, route, store, ui, page, navOn, cur, other, p, curTitle, stepText, dlg, answer, allowed, go, goJob, jobName, fmtTok, fmtDur };
+    return { NAV, MR, route, store, ui, page, navOn, cur, other, waiting, p, curTitle, stepText, dlg, answer, allowed, go, goJob, jobName, fmtTok, fmtDur };
   },
 };
 

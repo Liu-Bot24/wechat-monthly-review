@@ -60,6 +60,7 @@ MRPages.overview = {
           <td>
             <span class="chip accent" v-if="m.job === 'run'"><span class="dot run"></span>{{ runText }}</span>
             <span class="chip info" v-else-if="m.job === 'queued'">排队中</span>
+            <span class="chip warn" v-else-if="m.job === 'paused'">已暂停</span>
             <span class="chip info" v-else-if="m.job === 'plan'">估算中</span>
             <span class="chip" :class="stateKind(m.state)" v-else-if="m.state">{{ stateText(m.state) }}</span>
             <span class="chip" v-else>已估算，未生成</span>

@@ -219,6 +219,14 @@ function parseBudget(text) {
   if (!m) throw new Error('预算请写成数字，可以用 M 表示百万');
   return Math.round(+m[1] * ({ M: 1e6, K: 1e3, '万': 1e4 }[m[2]] || 1));
 }
+// A running job pauses like a stop (answered calls stay cached) and waits at the head of the queue; a waiting one is
+// held where it is. Either way it keeps its place and starts again once resumed.
+async function pauseJob(job) {
+  try { store.jobs = await api(`/api/jobs/${job.id}/pause`, { method: 'POST' }); } catch (e) { fail(e); }
+}
+async function resumeJob(job) {
+  try { store.jobs = await api(`/api/jobs/${job.id}/resume`, { method: 'POST' }); } catch (e) { fail(e); }
+}
 // job: the running job to stop (the one calling models when not given).
 async function stopJob(job) {
   const ok = await confirmBox('停止运行', '停止以后，已经完成的调用都保存在缓存中，之后继续运行时不会重做。确定停止吗？', { ok: '停止', danger: true });
@@ -238,6 +246,7 @@ const MonthRun = {
       <span class="muted small">开始于 {{ fmtTime(cur.started) }}</span>
       <span class="spacer"></span>
       <button class="btn sm" @click="log = cur.log"><Icon name="log"/>日志</button>
+      <button class="btn sm" @click="pauseJob(cur)" title="停下，在队列最前面等你继续；后面的任务先开始"><Icon name="pause"/>暂停</button>
       <button class="btn sm danger" @click="stopJob(cur)"><Icon name="stop"/>停止</button>
     </div>
     <div class="card-body">
@@ -248,6 +257,7 @@ const MonthRun = {
   </div>
   <div class="banner warn" v-if="queued && !(cur && cur.kind === 'run') && !(hand && !cur)" style="margin:0"><Icon name="info"/>
     <div class="grow">{{ queuedText }}</div>
+    <button class="btn sm primary" v-if="held" @click="resumeJob(held)"><Icon name="play"/>继续</button>
     <button class="btn sm" @click="go('run')">查看任务</button></div>
 
   <ExternalWait v-if="hand && !cur" :h="hand" :message="handText" style="margin:0">
@@ -316,8 +326,10 @@ const MonthRun = {
     const cur = computed(() => runningJobs().find(j => j.month === props.month) || null);
     const queued = computed(() => store.jobs.queue.some(j => j.month === props.month));
     const queuedRun = computed(() => store.jobs.queue.find(j => j.month === props.month && j.kind === 'run') || null);
+    const held = computed(() => store.jobs.queue.find(j => j.month === props.month && j.paused) || null);
     const queuedText = computed(() => {
       const run = queuedRun.value;
+      if (held.value) return '这个月已暂停，在队列中保留位置，点"继续"后轮到时接着处理。';
       if (!run) return '这个月份的估算在排队，前面的估算完成后开始。';
       if (run.api_only) return '这个月份在排队，前面的任务完成后开始。';
       if (cur.value && cur.value.hand_out) return '正在写出交给外部 Agent 的任务，写好后提示词出现在下面。模型做的那部分在排队，前面的任务完成后开始。';
@@ -377,12 +389,12 @@ const MonthRun = {
       if (way) await addJobs([{ kind: 'run', month: props.month, budget: budget || 0, agent: way === 'agent' }]);      // left empty: no cap this time
     }
     onMounted(() => { if (!store.settings) loadSettings(); });
-    return { budgetText, masks, log, cur, queued, queuedRun, queuedText, busy, settings, plan, last, lastLog, resumable, hand, handText, handedText, repairable, failed, repair, maskText, resume, stopJob, go,
+    return { budgetText, masks, log, cur, queued, queuedRun, held, queuedText, busy, settings, plan, last, lastLog, resumable, hand, handText, handedText, repairable, failed, repair, maskText, resume, stopJob, pauseJob, resumeJob, go,
              fmtTok, fmtInt, fmtTime, stateText, stateKind };
   },
 };
 function monthResumable(st) {
-  const stopped = ['budget-stop', 'external-wait', 'failed', 'stopped'];
+  const stopped = ['budget-stop', 'external-wait', 'failed', 'stopped', 'paused'];
   return !!st && (stopped.includes(st.status?.state) || (st.progress && st.progress.state !== 'running' && stopped.includes(st.progress.state)));
 }
 // Finished, but some calls failed: running again asks only for those (and what is built from them), the rest is cached.
@@ -406,6 +418,7 @@ MRPages.run = {
       <span class="spacer"></span>
       <button class="btn sm" @click="goJob(cur)"><Icon name="ext"/>打开</button>
       <button class="btn sm" @click="log = cur.log"><Icon name="log"/>日志</button>
+      <button class="btn sm" @click="pauseJob(cur)" title="停下，在队列最前面等你继续；后面的任务先开始"><Icon name="pause"/>暂停</button>
       <button class="btn sm danger" @click="stopJob(cur)"><Icon name="stop"/>停止</button>
     </div>
     <div class="card-body">
@@ -416,14 +429,17 @@ MRPages.run = {
 
   <div class="two">
     <div class="card">
-      <div class="card-head"><h2>队列</h2><span class="muted small">{{ jobs.queue.length ? jobs.queue.length + ' 个等待中' : '' }}</span>
+      <div class="card-head"><h2>队列</h2><span class="muted small">{{ queueText }}</span>
         <span class="spacer"></span>
         <button class="btn sm" v-if="jobs.queue.length" @click="clearQueue">清空队列</button></div>
       <div v-if="jobs.queue.length">
         <table class="t"><tbody>
           <tr v-for="(j, i) in jobs.queue" :key="j.id">
-            <td><a href="" @click.prevent="goJob(j)">{{ jobTitle(j) }}</a></td><td class="muted small">{{ jobNote(j) }}</td>
+            <td><a href="" @click.prevent="goJob(j)">{{ jobTitle(j) }}</a>
+              <span class="chip warn" v-if="j.paused" style="margin-left:6px">已暂停</span></td><td class="muted small">{{ jobNote(j) }}</td>
             <td class="r" style="white-space:nowrap">
+              <button class="btn sm" v-if="j.paused" title="轮到时开始" @click="resumeJob(j)"><Icon name="play"/>继续</button>
+              <button class="btn ghost sm icon" v-else title="暂停：留在队列里，不开始" @click="pauseJob(j)"><Icon name="pause"/></button>
               <button class="btn ghost sm icon" title="上移" :disabled="i === 0" @click="move(j, -1)"><Icon name="up"/></button>
               <button class="btn ghost sm icon" title="下移" :disabled="i === jobs.queue.length - 1" @click="move(j, 1)"><Icon name="down"/></button>
               <button class="btn ghost sm icon" title="移除" @click="remove(j)"><Icon name="x"/></button></td>
@@ -454,6 +470,10 @@ MRPages.run = {
     const log = ref(null);
     const jobs = computed(() => store.jobs);
     const running = computed(() => runningJobs());
+    const queueText = computed(() => {
+      const q = store.jobs.queue, held = q.filter(j => j.paused).length;
+      return !q.length ? '' : [q.length - held ? `${q.length - held} 个等待中` : '', held ? `${held} 个已暂停` : ''].filter(Boolean).join('，');
+    });
     // How a queued job will be done: with the external agent or the models, its budget, whether it writes the agent's tasks.
     const handed = () => (store.settings?.settings?.external_stages || []).length > 0;
     function jobNote(j) {
@@ -467,6 +487,6 @@ MRPages.run = {
     }
     async function move(j, d) { try { store.jobs = await api(`/api/jobs/${j.id}/move`, { method: 'POST', body: { delta: d } }); } catch (e) { fail(e); } }
     async function remove(j) { try { store.jobs = await api(`/api/jobs/${j.id}`, { method: 'DELETE' }); } catch (e) { fail(e); } }
-    return { log, jobs, running, jobNote, clearQueue, move, remove, stopJob, jobTitle, goJob, toast, fmtTok, fmtTime, fmtDur, stateText, stateKind };
+    return { log, jobs, running, queueText, jobNote, clearQueue, move, remove, stopJob, pauseJob, resumeJob, jobTitle, goJob, toast, fmtTok, fmtTime, fmtDur, stateText, stateKind };
   },
 };

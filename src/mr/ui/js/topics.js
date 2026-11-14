@@ -57,14 +57,16 @@ MRPages.topics = {
       <a v-for="t in list" :key="t.id" :href="'#/topics/' + t.id" :class="{on: t.id === id}" class="titem">
         <span class="grow" style="min-width:0">
           <span class="ellipsis" style="display:block">{{ t.title || '未命名专题' }}</span>
-          <span class="muted small ellipsis" style="display:block;font-weight:400">{{ rangeText(t.range) }}{{ t.job ? ' · ' + (t.job === 'queued' ? '排队中' : '运行中') : t.report ? '' : ' · 还没有生成' }}</span>
+          <span class="muted small ellipsis" style="display:block;font-weight:400">{{ rangeText(t.range) }}{{ t.job ? ' · ' + ({ queued: '排队中', paused: '已暂停' }[t.job] || '运行中') : t.report ? '' : ' · 还没有生成' }}</span>
         </span>
-        <span class="dot" :class="t.job ? 'run' : stateKind(t.state) === 'ok' ? 'ok' : stateKind(t.state) ? 'warn' : ''"></span></a>
-      <div class="empty small" v-if="!list.length" style="text-align:left">还没有专题。专题是一次单独的总结：任选会话、人、时间和话题，结果和月报分开保存。</div>
+        <span class="dot" :class="t.job === 'paused' ? 'warn' : t.job ? 'run' : stateKind(t.state) === 'ok' ? 'ok' : stateKind(t.state) ? 'warn' : ''"></span></a>
+      <div class="empty" v-if="!listed"><span class="spinner"></span></div>
+      <div class="empty small" v-else-if="!list.length" style="text-align:left">还没有专题。专题是一次单独的总结：任选会话、人、时间和话题，结果和月报分开保存。</div>
     </div>
 
     <div class="rmain">
-      <div v-if="!id" class="empty" style="margin-top:12vh;line-height:2">
+      <div v-if="!id && !listed" class="empty"><span class="spinner"></span></div>
+      <div v-else-if="!id" class="empty" style="margin-top:12vh;line-height:2">
         <div style="font-size:16px;font-weight:600;color:var(--text)">单独总结一段聊天</div>
         <div>任选会话、人、时间和话题，按你要的视角和模板写成一份总结。<br>结果放在输出目录的"专题"文件夹里，和月报分开。</div>
         <button class="btn primary" style="margin-top:12px" @click="create"><Icon name="plus"/>新建专题</button>
@@ -93,6 +95,7 @@ MRPages.topics = {
               <div class="card-head"><span class="dot run"></span><h2>正在{{ TOPIC_JOB[job.kind] }}</h2>
                 <span class="spacer"></span>
                 <button class="btn sm" @click="showLog(job.log)"><Icon name="log"/>日志</button>
+                <button class="btn sm" @click="pauseJob(job)" title="停下，在队列最前面等你继续；后面的任务先开始"><Icon name="pause"/>暂停</button>
                 <button class="btn sm danger" @click="stop"><Icon name="stop"/>停止</button></div>
               <div class="card-body">
                 <ProgressView v-if="job.progress" :p="job.progress" live/>
@@ -100,6 +103,7 @@ MRPages.topics = {
               </div>
             </div>
             <div class="banner warn" v-if="queued && !(job && job.kind !== 'topic-plan') && !(handoff && !job)"><Icon name="info"/><div class="grow">{{ queuedText }}</div>
+              <button class="btn sm primary" v-if="held" @click="resumeJob(held)"><Icon name="play"/>继续</button>
               <button class="btn sm" @click="go('run')">查看队列</button></div>
             <div class="banner bad" v-if="!job && lastFail"><Icon name="warn"/><div class="grow">上次{{ lastFail.what }}没有完成：{{ lastFail.message }}</div>
               <button class="btn sm" v-if="lastFail.log" @click="showLog(lastFail.log)"><Icon name="log"/>日志</button></div>
@@ -330,10 +334,12 @@ MRPages.topics = {
       person: '写给指定的那个人：称他为"你"，写对他意味着什么。只依据聊天内容，不揣测想法。' };
     const TEMPLATE_HELP = { brief: '几句话的结论加要点，一屏读完。', minutes: '按事情或时间分节，写清经过、各方说法、结论和未定的事。',
       timeline: '按日期排列发生了什么，最后写目前的状态。', research: '围绕话题整理各方观点、事实和数据、分歧和资源。', decisions: '已经决定的事，和还要做的事（谁、做什么、期限）。' };
-    const list = ref([]), meta = ref(null), detail = ref(null), spec = ref(null), tab = ref('config');
+    const list = ref([]), listed = ref(false), meta = ref(null), detail = ref(null), spec = ref(null), tab = ref('config');
     const saving = ref(''), drafting = ref(false), expanding = ref(false), problems = ref([]), kwText = ref('');
     const openChats = reactive({}), lid = ref(null), masks = ref(false), log = ref(null), ask = ref(null), scroller = ref(null);
-    const id = computed(() => route.arg || '');
+    // Another page's route (a month, say) is never taken for this page's 专题 while it is on its way out.
+    let lastId = '';
+    const id = computed(() => route.page === 'topics' ? (lastId = route.arg || '') : lastId);
     const plan = computed(() => detail.value?.plan || null);
     const report = computed(() => detail.value?.report || null);
     const search = ref('');
@@ -345,8 +351,10 @@ MRPages.topics = {
     const job = computed(() => runningJobs().find(j => j.month === '专题/' + id.value) || null);
     const queued = computed(() => store.jobs.queue.some(j => j.month === '专题/' + id.value));
     const queuedRun = computed(() => store.jobs.queue.find(j => j.month === '专题/' + id.value && j.kind !== 'topic-plan') || null);
+    const held = computed(() => store.jobs.queue.find(j => j.month === '专题/' + id.value && j.paused) || null);
     const queuedText = computed(() => {
       const run = queuedRun.value;
+      if (held.value) return '这个专题的任务已暂停，在队列中保留位置，点"继续"后轮到时开始。';
       if (!run || run.api_only) return '这个专题的任务在排队，前面的任务完成后开始。';
       if (job.value) return '正在写出交给外部 Agent 的任务，写好后提示词出现在下面。模型做的那部分在排队，前面的任务完成后开始。';
       return '这个专题在排队。交给外部 Agent 的任务能先写出的会马上写出；要先由模型筛查的，筛查完才写出阅读任务。';
@@ -380,15 +388,23 @@ MRPages.topics = {
       if (r && r.added.length) loadList();
     }
 
-    async function loadList() { try { list.value = (await api('/api/topics')).topics; } catch (e) { fail(e); } }
+    // The page is gone once left, but a request it made can still come back: its answer is dropped, and the route
+    // (shared by every page) is not read as this page's 专题 any more.
+    let alive = true;
+    async function loadList() {
+      try { const r = await api('/api/topics'); if (alive) { list.value = r.topics; listed.value = true; } } catch (e) { if (alive) fail(e); }
+    }
     let skipSave = false;
     async function loadDetail() {
-      if (!id.value) { detail.value = null; spec.value = null; return; }
+      if (!alive) return;
+      const want = id.value;
+      if (!want) { detail.value = null; spec.value = null; return; }
       try {
-        const d = await api('/api/topics/' + encodeURIComponent(id.value));
+        const d = await api('/api/topics/' + encodeURIComponent(want));
+        if (!alive || want !== id.value) return;       // left the page, or opened another 专题 meanwhile
         detail.value = d; search.value = d.search;
         if (!spec.value || spec.value._id !== id.value || !saveTimer) { skipSave = true; spec.value = { ...d.spec, _id: id.value }; }
-      } catch (e) { fail(e); detail.value = null; }
+      } catch (e) { if (alive && want === id.value) { fail(e); detail.value = null; } }
     }
     let saveTimer = null;
     watch(spec, () => {
@@ -592,19 +608,21 @@ MRPages.topics = {
 
     watch(id, async () => { problems.value = []; lid.value = null; for (const k of Object.keys(openChats)) delete openChats[k]; await flush(); detail.value = null; spec.value = null; await loadDetail(); });
     onMounted(async () => {
-      try { meta.value = await api('/api/topics/meta'); } catch (e) { fail(e); }
+      // meta brings the archive index up to date, which can take seconds; the list does not wait for it.
+      api('/api/topics/meta').then(m => { if (alive) meta.value = m; }, e => { if (alive) fail(e); });
       await loadList();
-      // The list can take a while; by then another page may be showing, and it stays.
-      if (route.page === 'topics' && !id.value && list.value[0]) history.replaceState(null, '', '#/topics/' + list.value[0].id), parseRoute();
+      if (!alive) return;
+      if (!id.value && list.value[0]) history.replaceState(null, '', '#/topics/' + list.value[0].id), parseRoute();
       await loadDetail();
+      if (!alive) return;
       if (detail.value && !detail.value.spec.request && !detail.value.report) setTimeout(() => ask.value && ask.value.focus(), 100);
       else if (detail.value?.report) tab.value = 'result';
     });
-    onBeforeUnmount(() => { if (saveTimer) save(); });
-    return { UNITS, PERSPECTIVE_HELP, TEMPLATE_HELP, TOPIC_JOB, list, meta, detail, spec, tab, saving, drafting, expanding, problems, kwText,
-             openChats, lid, masks, log, ask, scroller, id, plan, report, planStale, reportStale, repairable, job, queued, queuedRun, queuedText, busy, html, view, ratio, maskText,
+    onBeforeUnmount(() => { if (saveTimer) save(); alive = false; });
+    return { UNITS, PERSPECTIVE_HELP, TEMPLATE_HELP, TOPIC_JOB, list, listed, meta, detail, spec, tab, saving, drafting, expanding, problems, kwText,
+             openChats, lid, masks, log, ask, scroller, id, plan, report, planStale, reportStale, repairable, job, queued, queuedRun, held, queuedText, busy, html, view, ratio, maskText,
              excludedCount, lastFail, handoff, finish, excluded, catTitle, create, duplicate, remove, draft, settle, openScope, addKeywords, expand,
-             setUnit, setDay, setMonth, setYear, startJob, stop, showLog, toggleExclude, toggleChat, moreWindows, marked, onReportClick, copy,
+             setUnit, setDay, setMonth, setYear, startJob, stop, pauseJob, resumeJob, showLog, toggleExclude, toggleChat, moreWindows, marked, onReportClick, copy,
              go, openPath, rangeText, monthLabel, stateKind, fmtTok, fmtInt };
   },
 };
