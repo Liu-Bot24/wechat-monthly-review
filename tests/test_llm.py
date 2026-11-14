@@ -312,3 +312,42 @@ class FallbackSettingsTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ChangedModelTest(unittest.TestCase):
+    """A stage's model changed after some of its blocks were answered."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.run = Path(self.tmp.name)
+
+    def ask(self, m, carry_over, keys=('k1', 'k2')):
+        asked = []
+        def chat(client, spec, system, user, json_mode, images=None):
+            asked.append(spec['model'])
+            return json.dumps({'ok': spec['model']}), Models._usage(10, 2), 'stop'
+        models = Models(m, self.run, carry_over=carry_over)
+        with mock.patch.object(Models, '_chat', side_effect=chat):
+            answers = [models.call('at_me', k, 'sys', 'user') for k in keys]
+        return answers, asked, models
+
+    def changed(self):
+        m = models_config(enabled=False)
+        self.ask(m, False, keys=('k1',))                 # k1 answered by m-main, then the model is changed
+        m2 = models_config(enabled=False)
+        m2['stages']['at_me'] = 'plain'
+        return m2
+
+    def test_continuing_keeps_what_was_answered_and_asks_only_the_rest(self):
+        answers, asked, models = self.ask(self.changed(), True)
+        self.assertEqual(answers, [{'ok': 'm-main'}, {'ok': 'm-plain'}])
+        self.assertEqual(asked, ['m-plain'])
+        self.assertEqual(models.cached('at_me', 'k1', 'sys'), {'ok': 'm-main'})
+        models.keep_current()                            # the earlier call is part of what the result cost
+        kept = [json.loads(l)['model'] for l in models.receipts.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(sorted(kept), ['m-main', 'm-plain'])
+
+    def test_generating_a_finished_result_again_asks_the_new_model(self):
+        answers, asked, _ = self.ask(self.changed(), False)
+        self.assertEqual(answers, [{'ok': 'm-plain'}, {'ok': 'm-plain'}])
+        self.assertEqual(asked, ['m-plain', 'm-plain'])
