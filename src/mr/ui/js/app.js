@@ -108,6 +108,10 @@ window.addEventListener('hashchange', async () => {
   lastHash = target;
   parseRoute();
 });
+// Only one recording plays at a time, on any page: starting one pauses the others.
+document.addEventListener('play', e => {
+  if (e.target instanceof HTMLMediaElement) for (const m of document.querySelectorAll('audio, video')) if (m !== e.target) m.pause();
+}, true);
 window.addEventListener('beforeunload', e => { if (leaveGuards.some(g => g())) { e.preventDefault(); e.returnValue = ''; } });
 window.addEventListener('keydown', e => {
   // Ctrl+1…7 switch pages, like tabs.
