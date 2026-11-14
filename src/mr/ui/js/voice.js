@@ -64,7 +64,7 @@ MRPages.voice = {
       <thead><tr><th style="width:130px">时间</th><th style="width:200px">会话</th><th style="width:120px">谁说的</th><th style="width:240px">原音</th><th>文字</th></tr></thead>
       <tbody><tr v-for="it in shown" :key="it.id">
         <td class="num small">{{ it.time }}</td><td class="ellipsis" style="max-width:200px" :title="it.name">{{ it.name }}</td><td class="small">{{ it.sender }}</td>
-        <td><audio v-if="playing.has(it.id)" controls autoplay preload="none" :src="mediaUrl(it.id)" style="height:30px;width:230px"></audio>
+        <td><audio v-if="playing === it.id" :data-clip="it.id" controls preload="none" :src="mediaUrl(it.id)" style="height:30px;width:230px"></audio>
           <button v-else class="btn sm" @click="play(it.id)"><Icon name="play"/>播放</button></td>
         <td><span v-if="it.text !== null">{{ it.text || '（没有识别出内容）' }}</span><span v-else class="muted">待转写</span></td>
       </tr></tbody>
@@ -77,7 +77,7 @@ MRPages.voice = {
     const lastM = lastCompleteMonth() || new Date().toISOString().slice(0, 7);
     const first = ref(loadLocal('voice.first', lastM)), last = ref(loadLocal('voice.last', lastM));
     const chat = ref(''), state = ref(''), filter = ref('');
-    const data = ref(null), loading = ref(false), svc = ref(null), playing = ref(new Set()), lastProg = ref(null);
+    const data = ref(null), loading = ref(false), svc = ref(null), playing = ref(null), lastProg = ref(null);
     const chatOptions = ref([]);
     const cur = computed(() => store.jobs.current);
     const running = computed(() => cur.value && cur.value.kind === 'asr');
@@ -122,7 +122,14 @@ MRPages.voice = {
       try { lastProg.value = (await api('/api/voice/progress')).progress; } catch (e) {}
     }
     function more() { load(true); }
-    function play(id) { const s = new Set(playing.value); s.add(id); playing.value = s; }
+    // One player, started by the click itself: a row drawn again later (another range, filter or tab and back) shows
+    // the player without starting it, and starting one stops any other (see app.js).
+    async function play(id) {
+      playing.value = id;
+      await nextTick();
+      const el = [...document.querySelectorAll('audio[data-clip]')].find(a => a.dataset.clip === id);
+      if (el) el.play().catch(() => {});
+    }
     async function start() {
       if (svc.value && !svc.value.ok) {
         const ok = await confirmBox('语音识别服务不可用', svc.value.message + '\n仍然加入队列吗？');
