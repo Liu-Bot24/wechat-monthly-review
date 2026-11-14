@@ -351,3 +351,28 @@ class ChangedModelTest(unittest.TestCase):
         answers, asked, _ = self.ask(self.changed(), False)
         self.assertEqual(answers, [{'ok': 'm-plain'}, {'ok': 'm-plain'}])
         self.assertEqual(asked, ['m-plain', 'm-plain'])
+
+
+class ModelsOnlyTest(unittest.TestCase):
+    """改用模型做完: a stage not handed out this time still takes the results an agent already returned."""
+    def test_returned_results_are_used_and_only_the_rest_go_to_the_model(self):
+        from mr import external
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / 'out' / '2026-10'
+            settings = {'external_stages': ['at_me'], 'external_root': str(Path(tmp) / 'handoff'), 'output_root': str(Path(tmp) / 'out')}
+            opts = external.options(settings, run, api_only=True)
+            self.assertEqual(opts['stages'], set())
+            models = Models(models_config(enabled=False), run, external=opts)
+            result = models._handoff('at_me', 'k1', 'sys', True)[3]
+            result.parent.mkdir(parents=True, exist_ok=True)
+            result.write_text(json.dumps({'ok': 'agent'}), encoding='utf-8')
+            asked = []
+            def chat(client, spec, system, user, json_mode, images=None):
+                asked.append(spec['model'])
+                return json.dumps({'ok': spec['model']}), Models._usage(10, 2), 'stop'
+            with mock.patch.object(Models, '_chat', side_effect=chat):
+                self.assertEqual(models.call('at_me', 'k1', 'sys', 'user')['ok'], 'agent')
+                self.assertEqual(models.call('at_me', 'k2', 'sys', 'user'), {'ok': 'm-main'})     # no result: no task, no wait
+            self.assertEqual(asked, ['m-main'])
+            self.assertFalse(result.exists())
+            self.assertEqual(models.waiting, {})
