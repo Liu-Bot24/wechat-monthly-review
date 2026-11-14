@@ -129,9 +129,11 @@ class Models:
             # The file actually used: its receipt is what this answer cost, whichever model gave it.
             self.asked.add((stage, (found or self._path(stage, key, system)).stem))
         if hit is None:
-            if self.external and stage in self.external['stages'] and not images:
-                hit = self._external(stage, key, system, user, json_mode, validate, compare)
-            else:
+            if self.external and not images:
+                # A stage not handed out this time (改用模型做完, or 模型 chosen for the run) still takes a result an
+                # agent already returned for this call; only calls without one go to the model.
+                hit = self._external(stage, key, system, user, json_mode, validate, compare, wait=stage in self.external['stages'])
+            if hit is None:
                 hit = self._paid(stage, key, system, user, json_mode, validate, images)
             self._keep(self._path(stage, key, system), hit)
         self._count(stage, hit)
@@ -178,9 +180,10 @@ class Models:
         raise RuntimeError(f'{stage} {key} 调用失败：{last_error}')
 
     # ---------- stages handed to an external agent ----------
-    def _external(self, stage, key, system, user, json_mode, validate, compare):
+    def _external(self, stage, key, system, user, json_mode, validate, compare, wait=True):
         """The agent's answer when its result file is there and passes the checks an API answer passes.
-        Otherwise the task file is (re)written and ExternalPending is raised; a result that fails is set aside with the reason."""
+        Otherwise, when wait is set, the task file is (re)written and ExternalPending is raised; without wait, None.
+        A result that fails is set aside with the reason."""
         name, task, spec, result, aside = self._handoff(stage, key, system, json_mode)
         slot = self._path(stage, key, system).stem
         receipt = dict(stage=stage, key=key, answer=slot, model_id='external', provider='external', model='外部 Agent', api='external',
@@ -209,6 +212,8 @@ class Models:
                 for f in (task, spec, result, aside / result.name, aside / (name + '.txt')):
                     f.unlink(missing_ok=True)
                 return answer
+        if not wait:
+            return None
         self._post(stage, key, system, user, json_mode, validate)
         raise ExternalPending(stage)
 
