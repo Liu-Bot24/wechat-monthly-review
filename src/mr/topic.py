@@ -834,7 +834,7 @@ class TopicRun(Pipeline):
         try:
             self._p('begin', 'prepare', 0, '取数与查找')
             self.prepare()
-            models = self._agent_models(None, False) if hand_out else Models(self.models_config, self.run_dir)
+            models = self._agent_models(None, False) if hand_out else Models(self.models_config, self.run_dir, carry_over=self.carry_over())
             screen = self.screen(models, call=False) if self.spec['topic']['mode'] == 'ai' else None
             handed = 0
             if hand_out and screen and len(screen[1]) < len(screen[0]):

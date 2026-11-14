@@ -30,8 +30,10 @@ def caller(api):
     return {'responses': Models._responses, 'anthropic': am.ask}.get(api, Models._chat)
 
 class Models:
-    def __init__(self, models_config, run_dir, budget_tokens=None, systems=None, progress=None, external=None):
-        """external: what external.options gives (the stages handed to an agent, where each keeps its files, the percent re-asked), or None."""
+    def __init__(self, models_config, run_dir, budget_tokens=None, systems=None, progress=None, external=None, carry_over=False):
+        """external: what external.options gives (the stages handed to an agent, where each keeps its files, the percent re-asked), or None.
+        carry_over: the run continues an unfinished one, so an answer it already has for a block is used even when the
+        stage's model or instructions changed since; only blocks without an answer are asked, of the current model."""
         self.config = models_config
         self.run_dir = Path(run_dir)
         self.cache_dir = self.run_dir / 'cache'
@@ -45,7 +47,9 @@ class Models:
         self.calls = 0
         self.failures_in_a_row = 0
         self.external = external
-        self.asked = set()                 # (stage, answer file name) of every answer this run used, cached or new
+        self.carry_over = carry_over
+        self._earlier = {}                 # stage -> {block key: answer files kept under other models or instructions}
+        self.asked = set()                # (stage, answer file name) of every answer this run used, cached or new
         self._tasks = {}                   # stage -> {block key: [names of its task files in the handoff folder]}
         self.waiting = {}                  # (stage, name) -> task file, for calls an agent has yet to answer
         self.rejected = Counter()          # stage -> results not accepted in this run
@@ -72,8 +76,8 @@ class Models:
         return self.clients[provider_name]
 
     def _path(self, stage, key, system=None):
-        # An answer depends on the prompt and on where and how it was asked, so changing either asks again.
-        # A model's name, price or note are not part of this, so editing them keeps the cache.
+        # An answer depends on the prompt and on where and how it was asked, so a new result (generating a finished
+        # month again) asks again when either changed. A model's name, price or note are not part of this.
         system = self.systems.get(stage, '') if system is None else system
         version = hashlib.sha256((system + json.dumps(call_spec(self.config, stage), sort_keys=True)).encode('utf-8')).hexdigest()[:8]
         return self.cache_dir / stage / f'{key}-{version}.json'
@@ -82,11 +86,26 @@ class Models:
         name = self.config['stages'].get(stage)
         return bool(name and name in self.config['models'])
 
+    def _found(self, stage, key, system=None):
+        """The answer file this call uses, or None: the one asked as things are now; when continuing an unfinished
+        run, otherwise the newest one kept for the same block under another model or instructions."""
+        path = self._path(stage, key, system)
+        if path.exists() or not self.carry_over:
+            return path if path.exists() else None
+        with self.lock:
+            if stage not in self._earlier:
+                found = self._earlier[stage] = {}
+                folder = self.cache_dir / stage
+                for f in folder.glob('*.json') if folder.is_dir() else []:
+                    found.setdefault(f.stem.rsplit('-', 1)[0], []).append(f)
+            earlier = [f for f in self._earlier[stage].get(key, []) if f.exists()]
+        return max(earlier, key=lambda f: f.stat().st_mtime, default=None)
+
     def cached(self, stage, key, system=None):
         if not self.has_model(stage):          # an estimate before any model is chosen: nothing can have been answered
             return None
-        path = self._path(stage, key, system)
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+        path = self._found(stage, key, system)
+        return json.loads(path.read_text(encoding='utf-8')) if path else None
 
     def _receipt(self, **fields):
         fields['at'] = datetime.now().isoformat(timespec='seconds')
@@ -104,9 +123,11 @@ class Models:
         compare: for a stage an agent may answer, compare(agent answer, model answer) -> (items the model found,
         how many of them the agent's answer covers); a sample of the agent's answers is checked with it.
         """
-        hit = self.cached(stage, key, system)
+        found = self._found(stage, key, system) if self.has_model(stage) else None
+        hit = json.loads(found.read_text(encoding='utf-8')) if found else None
         with self.lock:
-            self.asked.add((stage, self._path(stage, key, system).stem))
+            # The file actually used: its receipt is what this answer cost, whichever model gave it.
+            self.asked.add((stage, (found or self._path(stage, key, system)).stem))
         if hit is None:
             if self.external and stage in self.external['stages'] and not images:
                 hit = self._external(stage, key, system, user, json_mode, validate, compare)

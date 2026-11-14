@@ -926,9 +926,19 @@ class Pipeline:
                      + (f'；有遗漏的 {a["replaced"]} 块改用了模型的结果。' if a['replaced'] else '。'))
         return text
 
+    def carry_over(self):
+        """Whether this run continues an unfinished one (stopped, failed, paused, waiting, or a result with failed parts
+        to make up): then every answer already kept is used, even if a stage's model was changed since. Only generating
+        a finished result again asks anew where the model or instructions changed."""
+        try:
+            state = json.loads((self.run_dir / 'status.json').read_text(encoding='utf-8')).get('state')
+        except (OSError, ValueError):
+            return False
+        return state != 'done'
+
     def _models(self, budget, api_only, stages=None, folders=None):
         models = Models(self.models_config, self.run_dir, budget, self.system, self.progress,
-                        external.options(self.settings, self.run_dir, stages, api_only, folders))
+                        external.options(self.settings, self.run_dir, stages, api_only, folders), carry_over=self.carry_over())
         self.external_used, self.audit_stats = models.external_used, models.audit
         self._open(models, models.external['stages'])
         return models
