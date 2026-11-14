@@ -267,10 +267,12 @@ class Archive:
         walk(self.root, '')
         return found
 
-    def refresh(self, progress=None):
-        """Bring the index up to date with the archive folder: documents added, changed or removed since the last look."""
-        with self._lock, one_at_a_time(self._lockfile):
+    def refresh(self, progress=None, on_disk=None):
+        """Bring the index up to date with the archive folder: documents added, changed or removed since the last look.
+        on_disk: the folder as _walk found it, when the caller looked it over without holding any lock."""
+        if on_disk is None:
             on_disk = self._walk()
+        with self._lock, one_at_a_time(self._lockfile):
             known = {r[0]: (r[1], r[2]) for r in self.db.execute('SELECT path, mtime, size FROM docs')}
             gone = [p for p in known if p not in on_disk]
             todo = [p for p, s in on_disk.items() if known.get(p) != s]
@@ -286,7 +288,11 @@ class Archive:
                 self.db.execute('DELETE FROM docs WHERE path=?', (rel,))
                 self.db.execute('DELETE FROM voices WHERE doc=?', (rel,))
             self.db.commit()
-            self._load()
+            # data_version moves when another process (a run) has written the shared index since this one last read it.
+            version = self.db.execute('PRAGMA data_version').fetchone()[0]
+            if todo or gone or version != getattr(self, '_version', None):
+                self._load()
+                self._version = version
 
     def _index_doc(self, rel, stat):
         self.db.execute('DELETE FROM voices WHERE doc=?', (rel,))

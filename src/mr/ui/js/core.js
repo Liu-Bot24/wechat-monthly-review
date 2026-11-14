@@ -112,7 +112,7 @@ function monthLabel(m) { return !m ? '' : /^\d{4}-\d{2}$/.test(m) ? `${m.slice(0
 const STATE = {
   done: ['完成', 'ok'], 'done-with-problems': ['部分失败', 'warn'], 'budget-stop': ['预算暂停', 'warn'],
   'external-wait': ['等待外部 Agent', 'info'],
-  failed: ['失败', 'bad'], stopped: ['已停止', 'warn'], running: ['运行中', 'accent'], 'read-done': ['已读完', 'info'],
+  failed: ['失败', 'bad'], stopped: ['已停止', 'warn'], paused: ['已暂停', 'warn'], running: ['运行中', 'accent'], 'read-done': ['已读完', 'info'],
   missing: ['月报文件不在了', 'warn'],
 };
 const stateText = s => (STATE[s] || [s || '未生成'])[0];
@@ -131,6 +131,7 @@ const ICONS = {
   spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+  pause: '<rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/>',
   play: '<path d="M7 5v14l11-7z"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>', down: '<path d="M12 5v14M6 13l6 6 6-6"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>', search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',

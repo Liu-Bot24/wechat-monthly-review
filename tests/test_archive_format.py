@@ -1,6 +1,7 @@
 """The archive is read through its Markdown alone: any folder, any tool that wrote it, no database."""
 import os, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 from mr.archive import Archive, location_problem, month_bounds, parse
 from archive_fixture import chat_doc, write_chat
 
@@ -90,6 +91,19 @@ class ArchiveFormat(unittest.TestCase):
         a.refresh()
         self.assertEqual(a.category('g@chatroom'), '03_工作')
         self.assertEqual(a.counts('g@chatroom', start, end)[0], 5)
+
+    def test_a_look_with_nothing_changed_keeps_what_is_loaded(self):
+        a = self.open()
+        with mock.patch.object(a, '_load', wraps=a._load) as load:
+            a.refresh(on_disk=a._walk())
+            load.assert_not_called()
+            # Another opener (a run) bringing the shared index up to date: this one reloads from it.
+            write_chat(self.root, '01_私聊/李四', '李四', '2026-10', 'ls', 'me',
+                       [('msg-l1', '2026-10-06 08:00:00', '李四', '文本', 'ls', '', ['好'], [])])
+            self.open().refresh()
+            a.refresh()
+            load.assert_called_once()
+        self.assertIn('ls', a.folders)
 
     def test_names_are_kept_as_written(self):
         header, msgs = parse(chat_doc('　', '2026-10', 'b', 'me',

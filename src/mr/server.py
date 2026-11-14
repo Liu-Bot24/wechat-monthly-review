@@ -14,7 +14,7 @@ from . import PROGRAM, ROOT, __version__, config, external, receipts, source, vo
 from .archive import Archive, TZ, ancestors, location_problem, media_id, media_kind, media_path, month_bounds, stamp
 from . import topic
 from .jobs import LANES, TOPIC_KINDS, Jobs, _mr, lock_holder
-from .media import read_transcript, voice_pace
+from .media import read_transcript, transcript_path, voice_pace
 from .pipeline import FINGERPRINT_LABELS, fingerprint, settle, system_prompts
 from .progress import read as read_json
 from .selection import Selection
@@ -72,6 +72,37 @@ def archive():
             threading.Thread(target=_open_archive, args=(where,), daemon=True).start()
         done, total = _archive['progress']
     fail(503, '正在读取归档目录中的聊天记录' + (f'：{done:,} / {total:,} 个文件' if total else '') + '。第一次需要几分钟，之后只读有变化的文件。')
+
+REFRESH_EVERY = 60
+_walking = threading.Lock()
+
+def fresh(a, wait=False):
+    """Bring the index up to date with the archive folder, at most once a minute: looking the folder over takes seconds
+    in a large archive, and pages ask each time they open. The look itself holds no lock, so other requests go on
+    meanwhile. wait=False: answer now from the index as it is and bring it up to date in the background, for pages
+    that only show it; wait=True: return once it is current, for a page that picks chats from it."""
+    last = _archive.get('fresh')
+    if last and last[0] is a and time.monotonic() - last[1] < REFRESH_EVERY:
+        return
+    if not _walking.acquire(blocking=wait):
+        return                                  # one is under way; its result shows on the next look
+    def run():
+        try:
+            last = _archive.get('fresh')
+            if last and last[0] is a and time.monotonic() - last[1] < REFRESH_EVERY:
+                return                          # another finished while this one waited
+            on_disk = a._walk()
+            with _alock:
+                a.refresh(on_disk=on_disk)
+            _archive['fresh'] = (a, time.monotonic())
+        except Exception as e:                  # the next look tries again; the window log shows why
+            print(f'更新归档索引时出错：{e}', file=sys.stderr)
+        finally:
+            _walking.release()
+    if wait:
+        run()
+    else:
+        threading.Thread(target=run, daemon=True).start()
 
 def _open_archive(where):
     try:
@@ -214,8 +245,10 @@ def month_state(month, cutoff, fp, snap):
     cur = next((snap[lane] for lane in LANES if (snap[lane] or {}).get('month') == month), None)
     if cur:
         out['job'] = cur['kind']
-    elif any(j.get('month') == month for j in snap['queue']):
-        out['job'] = 'queued'
+    else:
+        waiting = [j for j in snap['queue'] if j.get('month') == month]
+        if waiting:
+            out['job'] = 'paused' if all(j.get('paused') for j in waiting) else 'queued'
     return out
 
 @app.get('/api/overview')
@@ -422,6 +455,16 @@ def stop_jobs(body: dict = Body(default={})):
     jobs.stop(bool(body.get('clear_queue')), body.get('id'))
     return jobs.snapshot()
 
+@app.post('/api/jobs/{job_id}/pause')
+def pause_job(job_id: str):
+    jobs.pause(job_id)
+    return jobs.snapshot()
+
+@app.post('/api/jobs/{job_id}/resume')
+def resume_job(job_id: str):
+    jobs.resume(job_id)
+    return jobs.snapshot()
+
 @app.post('/api/jobs/{job_id}/move')
 def move_job(job_id: str, body: dict = Body(...)):
     jobs.move(job_id, int(body.get('delta', 0)))
@@ -502,7 +545,7 @@ def _topic_state(d, spec, refresh=False):
     a, monthly = archive(), selection()
     with _alock:
         if refresh:
-            a.refresh()
+            fresh(a)
         spec = topic.migrate(d, spec, a, monthly)
         sc = topic.Scope(spec, monthly)
         reach = sc.reach(a, _active_chats(a, spec))
@@ -514,8 +557,9 @@ def _topic_job(topic_id):
     for lane in LANES:
         if (snap[lane] or {}).get('month') == month:
             return snap[lane]['kind']
-    if any(j.get('month') == month for j in snap['queue']):
-        return 'queued'
+    waiting = [j for j in snap['queue'] if j.get('month') == month]
+    if waiting:
+        return 'paused' if all(j.get('paused') for j in waiting) else 'queued'
     return 'locked' if lock_holder(config.load_settings()['output_root'], month) else None
 
 @app.get('/api/topics')
@@ -532,7 +576,7 @@ def topics():
 def topic_meta():
     a = archive()
     with _alock:
-        a.refresh()
+        fresh(a)
         cutoff = a.latest()
         me = a.person(a.self_id)
         cats = a.categories()
@@ -834,8 +878,8 @@ def chat_stats():
 @app.get('/api/chats')
 def chats(topic_id: str = Query('', alias='topic')):
     a = archive()
+    fresh(a, wait=True)
     with _alock:
-        a.refresh()
         cats = a.categories()
     data = chat_stats()
     sel = selection()
@@ -905,6 +949,21 @@ def check_selection(body: dict = Body(...)):
 
 
 # ---------- voice ----------
+def _mark_transcribed(a, rows):
+    """r['done']: whether the clip has its text (media.transcript_path), from one listing per folder rather than one
+    look per clip, which over tens of thousands of clips takes seconds."""
+    seen = {}
+    for r in rows:
+        folder, name = os.path.split(r['main_path'])
+        have = seen.get(folder)
+        if have is None:
+            try:
+                have = {e.name.lower() for e in os.scandir(a.path(folder)) if e.name.lower().endswith('.txt')}
+            except OSError:
+                have = set()
+            seen[folder] = have
+        r['done'] = transcript_path(name).name.lower() in have
+
 @app.get('/api/voice')
 def voice_list(first: str, last: str, chat: str = '', offset: int = 0, limit: int = 200, state: str = ''):
     a = archive()
@@ -912,18 +971,19 @@ def voice_list(first: str, last: str, chat: str = '', offset: int = 0, limit: in
     start, end = month_bounds(first)[0], month_bounds(last)[1]
     with _alock:
         rows = voice.clips(a, selection(), start, end, [chat] if chat else None)
-    items = []
-    for r in rows:
-        text = read_transcript(a.path(r['main_path']))
-        items.append({'id': r['id'], 'chat': r['chat'], 'name': a.names.get(r['chat'], r['chat']), 'ts': r['timestamp'],
-                      'time': stamp(r['timestamp']).strftime('%Y-%m-%d %H:%M'), 'sender': '你' if r['sender'] == a.self_id else a.person(r['sender']),
-                      'text': text})
-    done = [i for i in items if i['text'] is not None]
+    # Whether each clip has its text is all the counts need; the text itself is read only for the rows sent.
+    _mark_transcribed(a, rows)
+    done = sum(r['done'] for r in rows)
     pace = voice_pace(s['output_root']) or 0.6
-    view = [i for i in items if not state or (state == 'done') == (i['text'] is not None)]
-    view.sort(key=lambda i: -i['ts'])
-    return {'total': len(items), 'done': len(done), 'pending': len(items) - len(done), 'pace': pace,
-            'eta_seconds': int((len(items) - len(done)) * pace), 'items': view[offset:offset + limit], 'matched': len(view)}
+    view = [r for r in rows if not state or (state == 'done') == r['done']]
+    view.sort(key=lambda r: -r['timestamp'])
+    items = [{'id': r['id'], 'chat': r['chat'], 'name': a.names.get(r['chat'], r['chat']), 'ts': r['timestamp'],
+              'time': stamp(r['timestamp']).strftime('%Y-%m-%d %H:%M'), 'sender': '你' if r['sender'] == a.self_id else a.person(r['sender']),
+              'text': read_transcript(a.path(r['main_path'])) if r['done'] else None} for r in view[offset:offset + limit]]
+    per = Counter(r['chat'] for r in rows)
+    return {'total': len(rows), 'done': done, 'pending': len(rows) - done, 'pace': pace,
+            'eta_seconds': int((len(rows) - done) * pace), 'items': items, 'matched': len(view),
+            'chats': [{'chat': c, 'name': a.names.get(c, c), 'n': n} for c, n in per.most_common()]}
 
 @app.get('/api/voice/progress')
 def voice_progress():

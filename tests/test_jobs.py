@@ -110,6 +110,49 @@ class QueueTest(unittest.TestCase):
         self.end('current')                    # 2026-08's run starts before its estimate did: the run writes the tasks
         self.assertEqual(self.lanes(), (('run', '2026-08'), ('plan', '2026-05'), []))
 
+    def test_a_paused_run_keeps_its_place_and_the_next_one_starts(self):
+        self.q.add([{'kind': 'run', 'month': '2026-09', 'api_only': True}, {'kind': 'run', 'month': '2026-08'},
+                    {'kind': 'run', 'month': '2026-07'}])
+        self.q._tick()
+        with mock.patch.object(jobs_mod, 'kill_tree', lambda pid: self.live.discard(pid)):
+            self.q.pause(self.q.data['current']['id'])
+        self.q._tick()
+        # Ended like a stop, back at the head of the queue paused; the next month went ahead.
+        self.assertEqual(self.lanes(), (('run', '2026-08'), None, [('run', '2026-09'), ('run', '2026-07')]))
+        held = self.q.data['queue'][0]
+        self.assertTrue(held['paused'])
+        self.assertTrue(held['api_only'])                           # its choices stay
+        self.assertNotIn('pid', held)
+        self.assertEqual(self.q.data['history'][0]['state'], 'paused')
+        # A paused job is passed over; 2026-07 goes next. A waiting job can be held too.
+        self.end('current')
+        self.assertEqual(self.lanes(), (('run', '2026-07'), None, [('run', '2026-09')]))
+        self.q.resume(held['id'])
+        self.end('current')
+        self.assertEqual(self.lanes(), (('run', '2026-09'), None, []))
+        self.q.add([{'kind': 'run', 'month': '2026-06'}])
+        self.q.pause(self.q.data['queue'][0]['id'])
+        self.end('current')
+        self.assertEqual(self.lanes(), (None, None, [('run', '2026-06')]))
+        self.assertFalse(self.q.busy())                              # a paused job keeps nothing waiting
+        # Asking for it again takes it off pause.
+        self.assertEqual(len(self.q.add([{'kind': 'run', 'month': '2026-06'}])), 1)
+        self.q._tick()
+        self.assertEqual(self.lanes(), (('run', '2026-06'), None, []))
+
+    def test_a_run_that_ended_by_itself_is_not_paused(self):
+        self.q.add([{'kind': 'run', 'month': '2026-09'}])
+        self.q._tick()
+        cur = self.q.data['current']
+        prog = jobs_mod.progress_path(self.settings['output_root'], cur)
+        prog.parent.mkdir(parents=True, exist_ok=True)
+        prog.write_text('{"state": "done", "message": ""}', encoding='utf-8')
+        with mock.patch.object(jobs_mod, 'kill_tree', lambda pid: self.live.discard(pid)):
+            self.q.pause(cur['id'])
+        self.q._tick()
+        self.assertEqual(self.lanes(), (None, None, []))
+        self.assertEqual(self.q.data['history'][0]['state'], 'done')
+
 
 if __name__ == '__main__':
     unittest.main()

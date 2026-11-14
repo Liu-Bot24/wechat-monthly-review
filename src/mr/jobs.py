@@ -206,9 +206,11 @@ class Jobs:
                 same = lambda o: o['kind'] == j['kind'] and o.get('month') == j.get('month') and j['kind'] != 'asr'
                 waiting = next((o for o in self.data['queue'] if same(o)), None)
                 if waiting:
-                    before = {k: waiting.get(k) for k in ('api_only', 'budget', 'hand_out')}
+                    # Asking for it again also takes it off pause.
+                    before = {k: waiting.get(k) for k in ('api_only', 'budget', 'hand_out', 'paused')}
                     waiting.update({k: j[k] for k in ('api_only', 'budget') if k in j})
                     waiting['hand_out'] = bool(waiting.get('hand_out') or j.get('hand_out'))
+                    waiting.pop('paused', None)
                     if {k: waiting.get(k) for k in before} != before:
                         added.append(waiting)
                     continue
@@ -243,7 +245,32 @@ class Jobs:
     def busy(self):
         """Whether a job that calls models is running or waiting: one added now that calls them would wait for it."""
         with self.lock:
-            return bool(self.data['current']) or any(j['kind'] not in LIGHT for j in self.data['queue'])
+            return bool(self.data['current']) or any(j['kind'] not in LIGHT and not j.get('paused') for j in self.data['queue'])
+
+    def pause(self, job_id):
+        """A running job ends like a stop (its answered calls are cached) and goes back to the head of the queue, paused;
+        a waiting one is held where it is. A paused job keeps its place and starts only once resumed."""
+        with self.lock:
+            cur = next((self.data[lane] for lane in LANES if self.data[lane] and self.data[lane]['id'] == job_id), None)
+            if cur:
+                cur['pause_requested'] = True
+                self._save()
+            else:
+                for j in self.data['queue']:
+                    if j['id'] == job_id:
+                        j['paused'] = True
+                        self._save()
+        if cur and alive(cur['pid'], cur.get('created')):
+            kill_tree(cur['pid'])
+        self._kick()
+
+    def resume(self, job_id):
+        with self.lock:
+            for j in self.data['queue']:
+                if j['id'] == job_id:
+                    j.pop('paused', None)
+                    self._save()
+        self._kick()
 
     def stop(self, clear_queue=False, job_id=None):
         """End a running job's process tree: the one with this id, else the one calling models. Its answered calls
@@ -303,7 +330,7 @@ class Jobs:
                 if self.data[lane]:
                     continue
                 for i, job in enumerate(self.data['queue']):
-                    if (job['kind'] in LIGHT) != (lane == 'side') or not self._start(job):
+                    if job.get('paused') or (job['kind'] in LIGHT) != (lane == 'side') or not self._start(job):
                         continue
                     self.data[lane] = self.data['queue'].pop(i)
                     if lane == 'current':
@@ -320,6 +347,8 @@ class Jobs:
         state = prog.get('state')
         if job.get('stop_requested'):
             state = 'stopped'
+        elif job.get('pause_requested') and state not in FINAL:
+            state = 'paused'            # one that ended by itself just before keeps its own end
         elif job['kind'] == 'plan':
             state = 'done' if code in (0, None) and (Path(root) / job['month'] / 'plan.json').exists() else 'failed'
         elif state not in FINAL:
@@ -329,7 +358,7 @@ class Jobs:
             message = _last_lines(job.get('log'))
         if prog and prog.get('state') == 'running':
             # The process ended without writing its own end (stopped, or killed); say so in its progress file.
-            prog.update(state=state, message=message or ('已停止' if state == 'stopped' else '进程意外结束'))
+            prog.update(state=state, message=message or {'stopped': '已停止', 'paused': '已暂停'}.get(state, '进程意外结束'))
             for s in prog.get('steps', []):
                 if s['status'] == 'running':
                     s['status'] = 'stopped'
@@ -342,8 +371,12 @@ class Jobs:
         self.data['history'].insert(0, record)
         del self.data['history'][300:]
         self.data[lane] = None
+        if state == 'paused':
+            # Back to the head of the queue as a new job, holding its place until resumed.
+            again = {k: v for k, v in job.items() if k not in ('pid', 'created', 'started', 'log', 'pause_requested', 'progress', 'handoff')}
+            self.data['queue'].insert(0, {**again, 'id': uuid.uuid4().hex[:10], 'paused': True})
         self._save()
-        if config.load_settings().get('notify') and job['kind'] not in ('plan', 'topic-plan') and state != 'stopped':
+        if config.load_settings().get('notify') and job['kind'] not in ('plan', 'topic-plan') and state not in ('stopped', 'paused'):
             what = (f'{job["month"]} 月报' if job['kind'] == 'run' else '语音转写' if job['kind'] == 'asr'
                     else f'专题「{job.get("title") or job.get("topic")}」' + ('筛查' if job['kind'] == 'topic-screen' else ''))
             title = {'done': f'{what}已完成', 'done-with-problems': f'{what}有部分失败', 'budget-stop': f'{what}：已到预算上限，暂停',
