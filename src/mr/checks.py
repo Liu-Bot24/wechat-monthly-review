@@ -34,10 +34,12 @@ def scan(answer, sids):
         answer[field] = [x for x in rows if isinstance(x, dict)] if isinstance(rows, list) else []
     _known(sids, [m for field in ('topics', 'escalations') for x in answer[field] for m in ids(x.get('msg_ids'))])
 
-def at_me(answer, wanted):
-    got = {s for i in answer['items'] for s in ids(i.get('msg_id'))}
+def at_me(answer, wanted, partial=False):
+    """partial: the answer may leave some messages out, as long as it covers at least one; the run asks for the
+    ones left out again on their own."""
+    got = {s for i in answer['items'] for s in ids(i.get('msg_id'))} & set(wanted)
     missing = set(wanted) - got
-    if missing:
+    if missing and (not partial or not got):
         raise ValueError(f'漏了 {sorted(missing)}')
 
 def verify(answer, n):

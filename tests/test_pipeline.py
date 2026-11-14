@@ -207,3 +207,41 @@ class ModelIdsTest(unittest.TestCase):
         p.material({'k': answer})
         got = [(t['title'], t['msg_ids']) for t in p.topics['c']]
         self.assertEqual(got, [('t', ['m1']), ('链接：a', ['m1']), ('链接：b', ['m1', 'm2'])])
+
+
+class AtMeTest(unittest.TestCase):
+    """A model that keeps leaving one @我 message out of a batch does not stop the month."""
+    def run_at_me(self, never=()):
+        from mr import checks
+        p = Pipeline.__new__(Pipeline)
+        p.progress, p.system = None, {'at_me': 'sys'}
+        lines = [{'sid': f'm{i}', 'ts': 1700000000 + i, 'sender': '张三', 'self': False, 'kind': '文本', 'text': f'第{i}条',
+                  'reply_to': None, 'in_month': True, 'count': 1} for i in range(60)]
+        p.packets = [{'name': '群', 'category': '群聊', 'lines': lines, 'at_me': [f'm{i}' for i in range(0, 60, 2)]}]
+        calls = []
+        class Models:
+            def call(self, stage, key, system, user, validate=None):
+                asked = validate.spec['wanted']
+                calls.append(asked)
+                answer = {'items': [{'msg_id': s, 'what': 'x'} for s in asked if s not in never and not (len(asked) > 1 and s == 'm4')]}
+                try:
+                    validate(answer)
+                except ValueError as e:              # what Models.call does once every attempt failed
+                    raise RuntimeError(f'at_me {key} 调用失败：{e}')
+                return answer
+        with mock.patch('builtins.print'):
+            items, failures = p.at_me(Models())
+        return items, failures, calls
+
+    def test_a_message_left_out_is_asked_again_on_its_own(self):
+        items, failures, calls = self.run_at_me()
+        self.assertEqual(len(items), 30)
+        self.assertEqual(failures, {})
+        self.assertEqual([len(c) for c in calls], [25, 1, 5])
+        self.assertEqual(calls[1], ['m4'])
+
+    def test_one_that_is_never_answered_is_a_failed_part(self):
+        items, failures, calls = self.run_at_me(never=('m4',))
+        self.assertEqual(len(items), 29)
+        self.assertEqual(len(failures), 1)
+        self.assertIn('@我：群', next(iter(failures)))
