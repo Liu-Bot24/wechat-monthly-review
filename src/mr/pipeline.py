@@ -11,16 +11,17 @@ from .checks import ids
 from .extract import extract_month, render, tokens
 from .llm import BudgetStop, ExternalPending, Models
 from .mask import scrub
-from .media import Transcriber, image_data_url
+from .media import Transcriber, image_data_url, read_transcript
 from .progress import Progress
 from .selection import Selection
 from .triage import build_chunks, me_line
 
 RETRY_PAUSES = (60, 180)      # seconds before each further round for failed calls
 REF = re.compile(r'\[?#?(?<![A-Za-z0-9_])(m\d+)\b\]?')
-# Settings that change what is read or how; a report made under other values is out of date.
+# Settings that change what is read or how; a report made under other values is out of date. Not 'asr': it only
+# decides whether a run transcribes new clips, and existing transcripts are read either way.
 CONTENT_SETTINGS = ('context_hours', 'chunk_tokens', 'overlap_lines', 'small_group_members', 'active_group', 'segment_lines',
-                    'window_lines', 'images', 'asr', 'recall', 'verify', 'vision', 'whole_chat_a_categories')
+                    'window_lines', 'images', 'recall', 'verify', 'vision', 'whole_chat_a_categories')
 # Before any month has run under this program, estimates use these starting figures, measured on a pilot run:
 # actual tokens per estimated read/scan token, and model seconds per million estimated tokens summed over all calls.
 PILOT = {'ratio': 1.54, 'seconds_per_mtok': 1468.0}
@@ -111,6 +112,12 @@ def fingerprint(systems, models_config, selection, settings):
     stages = {s: config.call_spec(models_config, s) for s in config.STAGE_KEYS if models_config['stages'].get(s) in models_config['models']}
     return {'prompts': config.digest(systems), 'models': config.digest(stages),
             'selection': config.digest(selection.data), 'settings': config.digest({k: settings.get(k) for k in CONTENT_SETTINGS})}
+
+def settings_digests(settings):
+    """Stored settings digests that match these settings: today's, and the one from before 'asr' left CONTENT_SETTINGS
+    with it on, which read the same text. One made with it off read no transcripts, so it is out of date."""
+    now = {k: settings.get(k) for k in CONTENT_SETTINGS}
+    return {config.digest(now), config.digest({**now, 'asr': True})}
 
 FINGERPRINT_LABELS = {'prompts': '提示词', 'models': '模型分配', 'selection': '读取范围', 'settings': '阅读设置'}
 
@@ -219,40 +226,48 @@ class Pipeline:
         rows = self.archive.voices(self.start - margin, self.end + margin)
         return [r for r in rows if not self.selection.reason(r['chat'], self.archive.category(r['chat']), r['chat'] in self.archive.excluded)]
 
-    def _transcribe(self, run=True):
-        """Voice clips of the chats that will be read, transcribed locally before extraction: {anchor: text}.
+    def transcribes(self):
+        """Whether a run transcribes the clips that have no text yet. Text already there is read either way."""
+        return bool(self.settings.get('asr') and self.models_config['stages'].get('asr'))
 
-        With run=False (planning) only clips already transcribed are used; the rest are counted as pending.
+    def _transcribe(self, run=True):
+        """Voice clips of the chats that will be read, with their text: {anchor: text}.
+
+        Clips already transcribed are always read, so the switch never changes what an existing transcript adds to a
+        block. With the switch on, a run (not planning) first transcribes the rest; those are counted as pending.
+        Clips left without text are counted as untranscribed.
         """
         self.asr_stats = Counter()
-        if not self.settings.get('asr') or not self.models_config['stages'].get('asr'):
-            self._p('begin', 'prepare', 0, '取数（语音转写已关闭）')
-            return {}
         rows = self.voice_rows()
-        asr = Transcriber(self.models_config, self.settings['output_root'], self.archive)
-        todo = sum(asr.cached(self.archive.path(r['main_path'])) is None for r in rows)
-        self.asr_stats.update(total=len(rows), pending=todo)
+        will = self.transcribes()
+        asr = Transcriber(self.models_config, self.settings['output_root'], self.archive) if will else None
+        todo = sum(read_transcript(self.archive.path(r['main_path'])) is None for r in rows)
+        self.asr_stats.update(total=len(rows), pending=todo if will else 0)
         if run:
-            self._p('begin', 'prepare', len(rows), f'语音转写：{len(rows)} 条，其中新转写 {todo} 条')
-            if rows:
-                print(f'S1 语音转写：{len(rows)} 条，其中新转写 {todo} 条（{asr.model}）', flush=True)
+            if will:
+                self._p('begin', 'prepare', len(rows), f'语音转写：{len(rows)} 条，其中新转写 {todo} 条')
+                if rows:
+                    print(f'S1 语音转写：{len(rows)} 条，其中新转写 {todo} 条（{asr.model}）', flush=True)
+            else:
+                self._p('begin', 'prepare', 0, '取数（不转写新的语音，已有的转写照常使用）')
         out = {}
         for r in rows:
             audio = self.archive.path(r['main_path'])
-            hit = asr.cached(audio)
-            if hit is None and not run:
+            hit = read_transcript(audio)
+            if hit is None and not (run and will):
+                self.asr_stats['untranscribed'] += 1
                 continue
             try:
                 text = hit if hit is not None else asr.transcribe(audio, r['main_path'])
             except openai.APIConnectionError:
                 raise SystemExit(f'语音转写服务连不上（{asr.base_url}）。请确认语音识别服务已经启动、接口地址正确，'
-                                 '或者在 设置 › 接口与模型 › 环节 中关闭"语音转写"后再运行。')
+                                 '或者在 设置 › 接口与模型 › 环节 中关闭"语音转写"后再运行：关闭后不转写新的语音，已经转写的照常使用。')
             except Exception as e:
                 self.asr_stats['failed'] += 1
                 self._p('tick', 'prepare', ok=False)
                 self._say(f'转写失败 {Path(r["main_path"]).name}：{str(e)[:120]}')
                 continue
-            if run:
+            if run and will:
                 self.asr_stats['done'] += 1
                 self._p('tick', 'prepare')
             if text:
@@ -1027,11 +1042,14 @@ class Pipeline:
             out += [f'- {self.by_chat[self._chunk_chat(k)]["name"]}' for k in refused]
         a, im, v = self.asr_stats, self.image_stats, self.verify_stats
         out.append('\n### 补充处理\n')
-        if self.settings.get('asr') and self.models_config['stages'].get('asr'):
+        if self.transcribes():
             out.append(f'- 语音：转写 {a["total"]} 条（{self._model("asr")}，其中这次新转写 {a["pending"]} 条），无内容 {a["empty"]} 条、失败 {a["failed"]} 条。'
                        '转写文字带有标记，模型按可能有识别错误来理解。')
+        elif a['total']:
+            out.append(f'- 语音：{a["total"]} 条，用了已有的转写 {a["total"] - a["untranscribed"]} 条（其中无内容 {a["empty"]} 条）；'
+                       f'没有转写的 {a["untranscribed"]} 条只按上下文理解（设置中关闭了运行时转写）。转写文字带有标记，模型按可能有识别错误来理解。')
         else:
-            out.append('- 语音：没有转写（设置中已关闭），语音消息只按上下文理解。')
+            out.append('- 语音：没有语音消息。')
         out.append(f'- 图片：阅读时申请看 {im["requested"]} 张；按上下文判断为隐私、只给位置 {im["private"]} 张；发给看图模型 {im["seen"] + im["private_after_look"]} 张'
                    f'（其中看不清 {im["unreadable"]} 张，看图时发现是隐私 {im["private_after_look"]} 张）'
                    + (f'；超出每月上限没有看 {im["over_cap"]} 张' if im['over_cap'] else '') + (f'；找不到文件 {im["missing"]} 张' if im['missing'] else '') + '。')

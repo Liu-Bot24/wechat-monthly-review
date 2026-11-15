@@ -58,7 +58,7 @@ DEFAULTS = {
 # The stages are part of the pipeline; only the model each one uses is the user's choice.
 # needs: what a model must support. switch: the setting that turns an optional stage off.
 STAGES = [
-    {'key': 'asr', 'label': '语音转写', 'needs': 'audio', 'switch': 'asr', 'desc': '读取之前把语音转成文字，存为语音文件旁边的同名 .txt，所有月份和专题共用。需要语音转写接口。'},
+    {'key': 'asr', 'label': '语音转写', 'needs': 'audio', 'switch': 'asr', 'desc': '生成时先把还没转写的语音转成文字，存为语音文件旁边的同名 .txt，所有月份和专题共用。需要语音转写接口。关闭后生成时不再转写，也不连接口；已经转写的照常读取。'},
     {'key': 'scan_b', 'label': '扫读', 'needs': 'text', 'desc': '我没有参与的群聊，按话题摘要，量最大。适合便宜、速度快的模型。'},
     {'key': 'read_a', 'label': '精读', 'needs': 'text', 'desc': '私聊、工作群和我参与的对话，写结论卡。决定报告质量的主要环节。'},
     {'key': 'escalate', 'label': '申请精读', 'needs': 'text', 'desc': '扫读时发现与我有关的片段，重新精读。调用很少。'},
