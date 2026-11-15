@@ -15,7 +15,7 @@ from .archive import Archive, TZ, ancestors, location_problem, media_id, media_k
 from . import topic
 from .jobs import LANES, TOPIC_KINDS, Jobs, _mr, lock_holder
 from .media import read_transcript, transcript_path, voice_pace
-from .pipeline import FINGERPRINT_LABELS, fingerprint, settle, system_prompts
+from .pipeline import FINGERPRINT_LABELS, fingerprint, settings_digests, settle, system_prompts
 from .progress import read as read_json
 from .selection import Selection
 
@@ -272,7 +272,8 @@ def month_plan(month: str):
         return {'plan': None}
     fp = current_fingerprint()
     # Only what changes the counts and the estimate; prompt and model changes do not.
-    plan['stale'] = [FINGERPRINT_LABELS[k] for k in ('selection', 'settings') if plan.get('fingerprint', {}).get(k) != fp.get(k)]
+    known = {'selection': {fp.get('selection')}, 'settings': settings_digests(config.load_settings())}
+    plan['stale'] = [FINGERPRINT_LABELS[k] for k in ('selection', 'settings') if plan.get('fingerprint', {}).get(k) not in known[k]]
     return {'plan': plan}
 
 @app.get('/api/months/{month}/masks')

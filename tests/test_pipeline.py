@@ -245,3 +245,48 @@ class AtMeTest(unittest.TestCase):
         self.assertEqual(len(items), 29)
         self.assertEqual(len(failures), 1)
         self.assertIn('@我：群', next(iter(failures)))
+
+
+class VoiceSwitchTest(unittest.TestCase):
+    """The 语音转写 switch only decides whether a run transcribes new clips; text already transcribed is always read."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        (root / 'a.mp3').write_bytes(b'x'); (root / 'a.txt').write_text('已经转写好的', encoding='utf-8')
+        (root / 'b.mp3').write_bytes(b'x')
+        self.root = root
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def pipe(self, switch):
+        p = Pipeline.__new__(Pipeline)
+        p.settings = {'asr': switch, 'output_root': str(self.root / 'out')}
+        p.models_config = {'stages': {'asr': 'whisper'}}
+        p.progress = None
+        p.archive = SimpleNamespace(path=lambda rel: self.root / rel)
+        p.voice_rows = lambda: [{'anchor': 'A', 'main_path': 'a.mp3'}, {'anchor': 'B', 'main_path': 'b.mp3'}]
+        return p
+
+    def test_off_reads_existing_text_without_the_service(self):
+        p = self.pipe(False)
+        with mock.patch.object(pipeline, 'Transcriber', side_effect=AssertionError('no service when off')), mock.patch('builtins.print'):
+            for run in (True, False):
+                self.assertEqual(p._transcribe(run=run), {'A': '已经转写好的'})
+                self.assertEqual((p.asr_stats['total'], p.asr_stats['pending'], p.asr_stats['untranscribed']), (2, 0, 1))
+
+    def test_on_transcribes_only_what_is_missing(self):
+        p = self.pipe(True)
+        fake = mock.Mock(model='w'); fake.transcribe.return_value = '新转写的'
+        with mock.patch.object(pipeline, 'Transcriber', return_value=fake), mock.patch('builtins.print'):
+            self.assertEqual(p._transcribe(run=False), {'A': '已经转写好的'})      # planning starts nothing
+            self.assertEqual(p.asr_stats['pending'], 1)
+            fake.transcribe.assert_not_called()
+            self.assertEqual(p._transcribe(run=True), {'A': '已经转写好的', 'B': '新转写的'})
+            fake.transcribe.assert_called_once()
+
+    def test_a_plan_made_with_the_switch_on_is_not_out_of_date(self):
+        s = {k: 1 for k in pipeline.CONTENT_SETTINGS}
+        legacy = lambda v: pipeline.config.digest({k: s.get(k) for k in pipeline.CONTENT_SETTINGS + ('asr',)} | {'asr': v})
+        self.assertIn(legacy(True), pipeline.settings_digests({**s, 'asr': False}))
+        self.assertNotIn(legacy(False), pipeline.settings_digests({**s, 'asr': False}))
