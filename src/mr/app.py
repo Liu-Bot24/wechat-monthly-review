@@ -32,17 +32,33 @@ def _free_port(preferred=None):
             except OSError:
                 continue
 
-def _already_running():
-    """True when another window holds the mutex; that window is brought to the front."""
-    k32, u32 = ctypes.windll.kernel32, ctypes.windll.user32
-    k32.CreateMutexW(None, False, MUTEX)
-    if k32.GetLastError() != 183:          # ERROR_ALREADY_EXISTS
-        return False
-    hwnd = u32.FindWindowW(None, TITLE)
-    if hwnd:
-        u32.ShowWindow(hwnd, 9)            # SW_RESTORE
-        u32.SetForegroundWindow(hwnd)
-    return True
+def _already_running(wait=120):
+    """True when another window holds the mutex; that window is brought to the front.
+
+    The mutex outlives the window by a while: a closed window's process still shuts its server down. Opened in that
+    time, this waits for it to go and then starts, instead of doing nothing; an instance still starting up shows its
+    window within the wait, and that one is brought forward."""
+    k32, u32 = ctypes.WinDLL('kernel32', use_last_error=True), ctypes.windll.user32
+    k32.CreateMutexW.restype = ctypes.wintypes.HANDLE
+    k32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.wintypes.BOOL, ctypes.wintypes.LPCWSTR)
+    k32.CloseHandle.argtypes = (ctypes.wintypes.HANDLE,)
+    end = time.monotonic() + wait
+    while True:
+        handle = k32.CreateMutexW(None, False, MUTEX)
+        if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+            return False                   # the handle stays open for this process's life
+        hwnd = u32.FindWindowW(None, TITLE)
+        if hwnd:
+            k32.CloseHandle(handle)
+            u32.ShowWindow(hwnd, 9)        # SW_RESTORE
+            u32.SetForegroundWindow(hwnd)
+            return True
+        k32.CloseHandle(handle)            # our own handle would keep the mutex alive
+        if time.monotonic() > end:
+            logging.warning('another window process kept running without a window; not starting')
+            u32.MessageBoxW(None, '上一个窗口还没有完全退出，请稍后再打开。', TITLE, 0x40)
+            return True
+        time.sleep(0.5)
 
 def _set_icon():
     """Give the window the program's icon; pythonw's own icon would show in the title bar and taskbar."""
