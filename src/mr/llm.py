@@ -128,13 +128,20 @@ class Models:
         with self.lock:
             # The file actually used: its receipt is what this answer cost, whichever model gave it.
             self.asked.add((stage, (found or self._path(stage, key, system)).stem))
+        refused_by = ()
+        if isinstance(hit, dict) and hit.get('_refused'):
+            # A refusal stands only once every model the stage may use now has refused; the others are asked.
+            # Refusals kept before they named their models are asked again in full.
+            refused_by = tuple(hit.get('by', ()))
+            if any(n not in refused_by for n in self._chain(stage)):
+                hit = None
         if hit is None:
             if self.external and not images:
                 # A stage not handed out this time (改用模型做完, or 模型 chosen for the run) still takes a result an
                 # agent already returned for this call; only calls without one go to the model.
                 hit = self._external(stage, key, system, user, json_mode, validate, compare, wait=stage in self.external['stages'])
             if hit is None:
-                hit = self._paid(stage, key, system, user, json_mode, validate, images)
+                hit = self._paid(stage, key, system, user, json_mode, validate, images, refused_by)
             self._keep(self._path(stage, key, system), hit)
         self._count(stage, hit)
         return hit
@@ -154,27 +161,43 @@ class Models:
             if a:
                 self.audit.update(checked=1, items=a['items'], covered=a['covered'], replaced=0 if answer.get('_external') else 1)
 
-    def _paid(self, stage, key, system, user, json_mode, validate, images):
-        """The answer of the stage's model, or of a fallback when it keeps failing. Not kept here."""
+    def _chain(self, stage):
+        """The models that may answer this stage, in the order they are tried: its own, then the fallbacks."""
+        primary = self.config['stages'][stage]
+        return [primary] + [n for n in fallbacks_for(self.config, stage) if n != primary]
+
+    def _paid(self, stage, key, system, user, json_mode, validate, images, refused_by=()):
+        """The answer of the stage's model, or of a fallback when it keeps failing or refuses. Not kept here.
+        refused_by: models that already refused this call; they are not asked again.
+        Only when every model refused is the answer a refusal, {'_refused': True, 'by': [...]}."""
         with self.lock:
             if self.budget is not None and self.used >= self.budget:
                 raise BudgetStop(stage)
             if self.failures_in_a_row >= 6:
                 raise RuntimeError('连续 6 次调用失败，已停止，请检查接口')
-        primary = self.config['stages'][stage]
-        last_error = None
-        for slot, name in enumerate([primary] + [n for n in fallbacks_for(self.config, stage) if n != primary]):
-            if slot:
-                self._event(f'{stage}：{primary} 多次失败，改用兜底模型 {name}')
+        refused, last_error, previous = list(refused_by), None, None
+        for slot, name in enumerate(self._chain(stage)):
+            if name in refused:
+                continue
+            if previous:
+                self._event(f'{stage}：{previous}，改用兜底模型 {name}')
             try:
                 # A fallback's answer is kept where the stage's own would be, so resuming the run does not ask again.
                 answer = self._ask(stage, key, name, system, user, json_mode, validate, images, slot, self._path(stage, key, system).stem)
             except _Failed as e:
-                last_error = e.error
+                last_error, previous = e.error, f'{name} 多次失败'
+                continue
+            if answer.get('_refused'):
+                refused.append(name)
+                previous = f'{name} 拒绝回答这一块'
                 continue
             with self.lock:
                 self.failures_in_a_row = 0
             return answer
+        if last_error is None:
+            # Every model refused, none failed: the refusal is kept, and the report lists the block.
+            self._event(f'{stage}：所有可用模型都拒绝回答一块内容，已记入附录')
+            return {'_refused': True, 'by': refused}
         with self.lock:
             self.failures_in_a_row += 1
         raise RuntimeError(f'{stage} {key} 调用失败：{last_error}')
@@ -368,8 +391,7 @@ class Models:
                 if self.progress:
                     self.progress.tokens(self.used, self.calls)
                 if finish == 'content_filter':
-                    answer = {'_refused': True}
-                    self._event(f'{stage}：模型拒绝回答一块内容，已记入附录')
+                    answer = {'_refused': True}         # _paid tries the next model
                 else:
                     if finish != 'stop':
                         raise ValueError(f'回答没有正常结束：{finish}')

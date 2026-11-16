@@ -1038,7 +1038,7 @@ class Pipeline:
             out.append('\n### 未完成的块\n')
             out += [f'- {self.by_chat.get(self._chunk_chat(k), {}).get("name", k)}：{v}' for k, v in failures.items()]
         if refused:
-            out.append('\n### 模型拒答的块\n')
+            out.append('\n### 所有可用模型都拒答的块\n')
             out += [f'- {self.by_chat[self._chunk_chat(k)]["name"]}' for k in refused]
         a, im, v = self.asr_stats, self.image_stats, self.verify_stats
         out.append('\n### 补充处理\n')
