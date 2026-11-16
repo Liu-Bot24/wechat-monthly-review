@@ -25,10 +25,13 @@ class FallbackTest(unittest.TestCase):
         self.addCleanup(sleep.stop)
 
     def call(self, m, stage, answers, images=None):
-        """answers: model name -> True (answers) or False (always fails). Returns (answer or exception, models asked)."""
+        """answers: model name -> True (answers), 'refuse' (its filter stops it) or False (always fails).
+        Returns (answer or exception, models asked)."""
         asked = []
         def chat(client, spec, system, user, json_mode, images=None):
             asked.append(spec['model'])
+            if answers.get(spec['model']) == 'refuse':
+                return '', Models._usage(10, 0), 'content_filter'
             if not answers.get(spec['model']):
                 raise ValueError('坏了')
             return json.dumps({'ok': spec['model']}), Models._usage(10, 2), 'stop'
@@ -62,6 +65,35 @@ class FallbackTest(unittest.TestCase):
         answer, asked, _ = self.call(models_config(), 'at_me', {})
         self.assertIsInstance(answer, RuntimeError)
         self.assertEqual(len(asked), 9)
+
+    def test_a_refusal_goes_to_the_next_model(self):
+        answer, asked, models = self.call(models_config(), 'at_me', {'m-main': 'refuse', 'm-plain': True})
+        self.assertEqual(answer, {'ok': 'm-plain'})
+        self.assertEqual(asked, ['m-main', 'm-plain'])                       # a refusal is not retried on the same model
+        self.assertEqual(models.cached('at_me', 'k1', 'sys'), {'ok': 'm-plain'})
+
+    def test_refused_only_when_every_model_refuses_and_then_kept(self):
+        everyone = {'m-main': 'refuse', 'm-plain': 'refuse', 'm-seeing': 'refuse'}
+        answer, asked, _ = self.call(models_config(), 'at_me', everyone)
+        self.assertEqual(answer, {'_refused': True, 'by': ['main', 'plain', 'seeing']})
+        answer, asked, _ = self.call(models_config(), 'at_me', everyone)
+        self.assertEqual(asked, [])                                           # nobody left to ask
+        self.assertTrue(answer['_refused'])
+
+    def test_a_kept_refusal_asks_the_models_that_have_not_refused(self):
+        path = Models(models_config(), Path(self.tmp.name))._path('at_me', 'k1', 'sys')
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'_refused': True, 'by': ['main']}), encoding='utf-8')
+        answer, asked, _ = self.call(models_config(), 'at_me', {'m-main': True, 'm-plain': True})
+        self.assertEqual((answer, asked), ({'ok': 'm-plain'}, ['m-plain']))
+        path.write_text(json.dumps({'_refused': True}), encoding='utf-8')      # kept before refusals named their models
+        answer, asked, _ = self.call(models_config(), 'at_me', {'m-main': True})
+        self.assertEqual((answer, asked), ({'ok': 'm-main'}, ['m-main']))
+
+    def test_refusal_then_failures_is_a_failure(self):
+        answer, asked, models = self.call(models_config(), 'at_me', {'m-main': 'refuse'})
+        self.assertIsInstance(answer, RuntimeError)
+        self.assertIsNone(models.cached('at_me', 'k1', 'sys'))                # not kept: the next run asks again
 
     def test_fallbacks_for(self):
         m = models_config(('whisper', 'main'))
