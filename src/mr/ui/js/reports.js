@@ -130,7 +130,6 @@ MRPages.reports = {
         <span class="chip" v-if="m && m.job" :class="{ queued: 'info', paused: 'warn' }[m.job] || 'accent'">{{ { queued: '排队中', paused: '已暂停', plan: '估算中' }[m.job] || '运行中' }}</span>
         <span class="chip" v-else-if="m && m.state" :class="stateKind(m.state)">{{ stateText(m.state) }}</span>
         <span class="chip warn click" v-if="m && m.stale.length" role="button" title="看看变了什么，再决定要不要重新生成" @click="source = month">数据源有变化</span>
-        <span class="muted small" v-if="report && report.status">{{ fmtTok(report.status.tokens_used) }} token</span>
         <span class="spacer"></span>
         <button class="btn sm" @click="estimate" :disabled="busy || !complete" title="只取数和分块，不调用模型"><Icon name="info"/>估算</button>
         <button class="btn sm primary" @click="start" :disabled="busy || !complete"><Icon name="play"/>{{ resumable ? '继续生成' : repairable ? '补做失败的部分' : m && m.report ? '重新生成' : '生成' }}</button>
