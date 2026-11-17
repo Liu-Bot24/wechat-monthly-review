@@ -15,7 +15,7 @@ MRPages.overview = {
   </div>
   <div class="tiles" v-if="o">
     <div class="tile"><div class="k">最近一期月报</div><div class="v">{{ latest ? monthLabel(latest.month) : '还没有' }}</div>
-      <div class="d" v-if="latest">{{ stateText(latest.state) }} · {{ fmtTok(latest.tokens) }} token</div></div>
+      <div class="d" v-if="latest">{{ stateText(latest.state) }} · 实际 {{ fmtTok(latest.tokens) }} · 估算 {{ latest.estimate ? fmtTok(latest.estimate.tokens) : '—' }}</div></div>
     <div class="tile"><div class="k">最近 3 期平均用量</div><div class="v">{{ o.average_tokens ? fmtTok(o.average_tokens) : '—' }}</div>
       <div class="d">按已完成的月份计算</div></div>
     <div class="tile"><div class="k">每月预算</div><div class="v">{{ o.budget ? fmtTok(o.budget) : '不限' }}</div>
@@ -53,7 +53,10 @@ MRPages.overview = {
       <button class="btn sm" v-if="staleRows.length" @click="generate(staleRows.map(m => m.month))"><Icon name="refresh"/>重新生成数据源有变化的（{{ staleRows.length }}）</button>
     </div>
     <table class="t" v-if="rows.length">
-      <thead><tr><th style="width:150px">月份</th><th>状态</th><th class="r" style="width:120px">用量</th><th style="width:150px">更新时间</th><th class="r" style="width:280px"></th></tr></thead>
+      <thead><tr><th style="width:150px">月份</th><th>状态</th>
+        <th class="r" style="width:110px">估算</th>
+        <th class="r" style="width:110px">实际</th>
+        <th style="width:150px">更新时间</th><th class="r" style="width:280px"></th></tr></thead>
       <tbody>
         <tr v-for="m in rows" :key="m.month" @dblclick="m.report && go('reports', m.month)">
           <td><b>{{ monthLabel(m.month) }}</b></td>
@@ -66,11 +69,8 @@ MRPages.overview = {
             <span class="chip" v-else>已估算，未生成</span>
             <span class="chip warn click" v-if="m.stale.length" role="button" title="看看变了什么，再决定要不要重新生成" style="margin-left:6px" @click="source = m.month">数据源有变化</span>
           </td>
-          <td class="r num">
-            <template v-if="m.tokens">{{ fmtTok(m.tokens) }}</template>
-            <span class="muted" v-else-if="m.estimate" title="估算值">约 {{ fmtTok(m.estimate.tokens) }}</span>
-            <span class="muted" v-else>—</span>
-          </td>
+          <td class="r num muted" :title="m.estimate ? m.estimate.basis : ''">{{ m.estimate ? fmtTok(m.estimate.tokens) : '—' }}</td>
+          <td class="r num">{{ m.tokens ? fmtTok(m.tokens) : '—' }}</td>
           <td class="muted small">{{ m.updated ? m.updated.replace('T', ' ').slice(0, 16) : '—' }}</td>
           <td class="r">
             <div class="row" style="justify-content:flex-end;gap:6px">

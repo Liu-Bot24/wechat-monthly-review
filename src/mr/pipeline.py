@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 import openai
-from . import checks, config, external
+from . import checks, config, external, receipts
 from .archive import Archive, category_title, month_bounds, stamp
 from .checks import ids
 from .extract import extract_month, render, tokens
@@ -83,20 +83,24 @@ def system_prompts(root):
     return out
 
 def history(output_root, exclude=None):
-    """Finished runs that recorded their estimate, from each month's status.json."""
+    """Finished runs that recorded their estimate, from each month's status.json, made wholly through the interfaces:
+    where an external agent answered some blocks, their tokens were never counted, so such a month would make every
+    estimate look cheaper than a run through the interfaces is."""
     runs = []
     for status in Path(output_root).glob('*/status.json'):
         try:
             st = json.loads(status.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue
-        if st.get('month') != exclude and st.get('state') in ('done', 'done-with-problems') and st.get('est_tokens') and st.get('tokens_used'):
+        if st.get('month') != exclude and st.get('state') in ('done', 'done-with-problems') and st.get('est_tokens') and st.get('tokens_used') \
+                and not receipts.external_blocks(status.parent):
             runs.append(st)
     return runs
 
-def estimate(est_tokens, settings, output_root, month=None, voice_pending=0):
-    """Tokens and minutes a run will take, scaled from measured runs (or the pilot before there are any)."""
-    runs = history(output_root, exclude=month)
+def estimate(est_tokens, settings, output_root, month=None, voice_pending=0, runs=None):
+    """Tokens and minutes a run will take if every stage goes through the interfaces, scaled from measured runs
+    (or the pilot before there are any). runs: history(output_root) when the caller already has it."""
+    runs = [r for r in runs if r.get('month') != month] if runs is not None else history(output_root, exclude=month)
     if runs:
         ratio = sum(r['tokens_used'] for r in runs) / sum(r['est_tokens'] for r in runs)
         timed = [r for r in runs if r.get('model_seconds')]

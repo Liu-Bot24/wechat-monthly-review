@@ -27,7 +27,7 @@ const App = {
         <span>{{ stepText }}</span>
         <Bar class="bar" :value="p.fraction"/>
         <span class="num">{{ Math.round((p.fraction || 0) * 100) }}%</span>
-        <span class="muted" v-if="p.tokens">已用 {{ fmtTok(p.tokens) }} token</span>
+        <span class="muted" v-if="p.tokens">已用 {{ fmtTok(p.tokens) }} token<template v-if="curEstimate"> · 估算 {{ fmtTok(curEstimate) }}</template></span>
         <span class="muted" v-if="p.eta_seconds">预计还要 {{ fmtDur(p.eta_seconds) }}</span>
       </template>
       <span v-else class="muted">{{ cur.kind === 'plan' || cur.kind === 'topic-plan' ? '正在取数（不调用模型）…' : '正在启动…' }}</span>
@@ -77,6 +77,8 @@ const App = {
     const waiting = computed(() => store.jobs.queue.filter(j => !j.paused).length);     // paused ones start only when resumed
     const p = computed(() => cur.value?.progress);
     const curTitle = computed(() => !cur.value ? '' : jobName(cur.value));
+    // A month being generated, beside what it has used: its estimate if every stage went through the interfaces.
+    const curEstimate = computed(() => cur.value?.kind === 'run' ? (store.overview?.months || []).find(m => m.month === cur.value.month)?.estimate?.tokens || null : null);
     const stepText = computed(() => {
       const s = (p.value?.steps || []).find(x => x.key === p.value.step);
       return s ? `${s.label}${s.total ? ' ' + s.done + '/' + s.total : ''}` : p.value?.message || '';
@@ -88,7 +90,7 @@ const App = {
       if (v && !allowed()) return;          // the text has not been typed: neither the button nor Enter goes through
       const d = ui.dialog; ui.dialog = null; d && d.resolve(v && (d.check || d.choices) ? { checked: d.checked, choice: d.choice } : v);
     }
-    return { NAV, MR, route, store, ui, page, navOn, cur, other, waiting, p, curTitle, stepText, dlg, answer, allowed, go, goJob, jobName, fmtTok, fmtDur };
+    return { NAV, MR, route, store, ui, page, navOn, cur, other, waiting, p, curTitle, curEstimate, stepText, dlg, answer, allowed, go, goJob, jobName, fmtTok, fmtDur };
   },
 };
 

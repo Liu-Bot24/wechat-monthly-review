@@ -51,6 +51,38 @@ def current(rows, cache_dir=None, totals=None):
     return sorted([i for (stage, key, _), i in kept.items() if (stage, key) not in extra]
                   + [i for i, r in enumerate(rows) if r.get('stage') in ALWAYS])
 
+_EXTERNAL = {}       # receipts path -> ((mtime, size), counts): read once per change of the file
+
+def external_blocks(run_dir):
+    """{stage: blocks} that an external agent answered for this month's or 专题's result, from its call records;
+    {} when the agent did none. Those answers cost nothing through an interface and carry no token counts, so a
+    result with any is not comparable with one made wholly through the interfaces."""
+    f = Path(run_dir) / 'receipts.jsonl'
+    try:
+        st = f.stat()
+    except OSError:
+        return {}
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _EXTERNAL.get(str(f))
+    if hit and hit[0] == stamp:
+        return dict(hit[1])
+    seen = set()
+    with open(f, encoding='utf-8') as fh:
+        for line in fh:
+            if '"external"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get('api') == 'external' and r.get('status') == 'ok':
+                seen.add((r.get('stage'), r.get('key')))
+    counts = {}
+    for stage, _ in seen:
+        counts[stage] = counts.get(stage, 0) + 1
+    _EXTERNAL[str(f)] = (stamp, counts)
+    return dict(counts)
+
 def settle(run_dir, dry=False):
     """Reduce a finished result's records once. Returns (calls before, calls after), or None when there is nothing to do:
     the result is unfinished, was already reduced, or has no records."""

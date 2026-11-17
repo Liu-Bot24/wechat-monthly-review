@@ -296,7 +296,8 @@ const MonthRun = {
         <span class="chip warn" v-if="plan && plan.stale.length">之后{{ plan.stale.join('、') }}有变化，建议重新估算</span></div>
       <div class="card-body" v-if="plan">
         <div class="tiles" style="margin-bottom:10px">
-          <div class="tile"><div class="k">预计用量</div><div class="v">{{ fmtTok(plan.estimate.tokens) }}</div><div class="d">{{ plan.estimate.basis }}</div></div>
+          <div class="tile"><div class="k">估算用量</div><div class="v">{{ fmtTok(plan.estimate.tokens) }}</div><div class="d">{{ plan.estimate.basis }}</div></div>
+          <div class="tile" v-if="used !== null"><div class="k">实际用量</div><div class="v">{{ fmtTok(used) }}</div><div class="d">这一版月报</div></div>
           <div class="tile"><div class="k">预计时间</div><div class="v">{{ plan.estimate.minutes }} 分钟</div><div class="d">并发 {{ settings && settings.concurrency }}</div></div>
         </div>
         <div class="banner warn" v-if="plan.over_budget"><Icon name="warn"/><div class="grow">预计用量超过每月预算 {{ fmtTok(plan.budget) }}。运行到预算上限时会自动暂停，可以追加预算后继续。</div></div>
@@ -380,6 +381,7 @@ const MonthRun = {
       if (way) await addJobs([{ kind: 'run', month: props.month, agent: way === 'agent' }]);
     }
     const maskText = computed(() => Object.entries(plan.value?.masks || {}).map(([k, v]) => `${k} ${v}`).join('、'));
+    const used = computed(() => props.st?.status?.tokens_used ?? null);       // what this version of the month used
     watch(() => props.month, () => { budgetText.value = ''; });
     // apiOnly: 改用模型做完, which asks nothing more; 继续 asks again, starting from how the month was run last time.
     async function resume(apiOnly) {
@@ -389,7 +391,7 @@ const MonthRun = {
       if (way) await addJobs([{ kind: 'run', month: props.month, budget: budget || 0, agent: way === 'agent' }]);      // left empty: no cap this time
     }
     onMounted(() => { if (!store.settings) loadSettings(); });
-    return { budgetText, masks, log, cur, queued, queuedRun, held, queuedText, busy, settings, plan, last, lastLog, resumable, hand, handText, handedText, repairable, failed, repair, maskText, resume, stopJob, pauseJob, resumeJob, go,
+    return { budgetText, masks, log, cur, queued, queuedRun, held, queuedText, busy, settings, plan, last, lastLog, resumable, hand, handText, handedText, repairable, failed, repair, maskText, used, resume, stopJob, pauseJob, resumeJob, go,
              fmtTok, fmtInt, fmtTime, stateText, stateKind };
   },
 };
@@ -451,10 +453,13 @@ MRPages.run = {
       <div class="card-head"><h2>运行记录</h2></div>
       <div style="max-height:620px;overflow:auto" v-if="jobs.history.length">
         <table class="t small">
-          <thead><tr><th>任务</th><th>开始</th><th class="r">用时</th><th>结果</th><th class="r">token</th><th></th></tr></thead>
+          <thead><tr><th>任务</th><th>开始</th><th class="r">用时</th><th>结果</th>
+            <th class="r">估算</th><th class="r">实际</th><th></th></tr></thead>
           <tbody><tr v-for="r in jobs.history" :key="r.id">
-            <td><a href="" @click.prevent="goJob(r)">{{ jobTitle(r) }}</a></td><td class="num">{{ fmtTime(r.started) }}</td><td class="r num">{{ fmtDur(r.ended - r.started) }}</td>
+            <td><a href="" @click.prevent="goJob(r)">{{ jobTitle(r) }}</a></td>
+            <td class="num">{{ fmtTime(r.started) }}</td><td class="r num">{{ fmtDur(r.ended - r.started) }}</td>
             <td><span class="chip" :class="stateKind(r.state)" :title="r.message">{{ stateText(r.state) }}</span></td>
+            <td class="r num muted">{{ r.kind === 'run' && jobMonth(r) && jobMonth(r).estimate ? fmtTok(jobMonth(r).estimate.tokens) : '—' }}</td>
             <td class="r num">{{ fmtTok(r.tokens) }}</td>
             <td class="r"><button class="btn ghost sm icon" title="查看日志" @click="r.log ? log = r.log : toast('这次运行没有日志', 'warn')"><Icon name="log"/></button></td>
           </tr></tbody></table>
@@ -480,13 +485,15 @@ MRPages.run = {
       const way = ['run', 'topic-run', 'topic-screen'].includes(j.kind) && handed() ? (j.api_only ? '模型' : '外部 Agent') : '';
       return [way, j.hand_out ? '同时写出外部 Agent 的任务' : '', j.budget ? '预算 ' + fmtTok(j.budget) : ''].filter(Boolean).join(' · ');
     }
-    onMounted(() => { if (!store.settings) loadSettings(); });
+    // A past run of a month, beside the month's estimate.
+    const jobMonth = r => r.kind === 'run' ? (store.overview?.months || []).find(m => m.month === r.month) || null : null;
+    onMounted(() => { if (!store.settings) loadSettings(); if (!store.overview) loadOverview(); });
     async function clearQueue() {
       for (const j of [...store.jobs.queue]) await api(`/api/jobs/${j.id}`, { method: 'DELETE' });
       pollJobs();
     }
     async function move(j, d) { try { store.jobs = await api(`/api/jobs/${j.id}/move`, { method: 'POST', body: { delta: d } }); } catch (e) { fail(e); } }
     async function remove(j) { try { store.jobs = await api(`/api/jobs/${j.id}`, { method: 'DELETE' }); } catch (e) { fail(e); } }
-    return { log, jobs, running, queueText, jobNote, clearQueue, move, remove, stopJob, pauseJob, resumeJob, jobTitle, goJob, toast, fmtTok, fmtTime, fmtDur, stateText, stateKind };
+    return { log, jobs, running, queueText, jobNote, jobMonth, clearQueue, move, remove, stopJob, pauseJob, resumeJob, jobTitle, goJob, toast, fmtTok, fmtTime, fmtDur, stateText, stateKind };
   },
 };

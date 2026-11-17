@@ -15,7 +15,7 @@ from .archive import Archive, TZ, ancestors, location_problem, media_id, media_k
 from . import topic
 from .jobs import LANES, TOPIC_KINDS, Jobs, _mr, lock_holder
 from .media import read_transcript, transcript_path, voice_pace
-from .pipeline import FINGERPRINT_LABELS, fingerprint, settings_digests, settle, system_prompts
+from .pipeline import FINGERPRINT_LABELS, estimate, fingerprint, history, settings_digests, settle, system_prompts
 from .progress import read as read_json
 from .selection import Selection
 
@@ -224,7 +224,18 @@ def _settle(run_dir, month):
     except OSError as e:
         print(f'整理 {month} 的校验提示时出错：{e}', file=sys.stderr)
 
-def month_state(month, cutoff, fp, snap):
+def _plan_estimate(plan, s, month, runs=None, st=None):
+    """A month's estimate by today's measured runs, so that every month is compared with the same basis; the one its
+    plan stored was made with the runs of that day. A month run without a stored plan has the figure its run recorded
+    (st: its status). None when neither has one."""
+    est = (plan or {}).get('est_tokens')
+    if est is None:
+        est = (st or {}).get('est_tokens')
+    if est is None:
+        return (plan or {}).get('estimate')
+    return estimate(est, s, s['output_root'], month, ((plan or {}).get('voice') or {}).get('pending', 0), runs)
+
+def month_state(month, cutoff, fp, snap, runs=None):
     s = config.load_settings()
     run_dir = Path(s['output_root']) / month
     _settle(run_dir, month)
@@ -236,7 +247,7 @@ def month_state(month, cutoff, fp, snap):
     out = {'month': month, 'data': data, 'state': st.get('state') or ('done' if report.exists() else None),
            'report': report.exists(), 'tokens': st.get('tokens_used'), 'updated': st.get('updated'), 'stale': []}
     plan = read_json(run_dir / 'plan.json')
-    out['estimate'] = plan.get('estimate') if plan else None
+    out['estimate'] = _plan_estimate(plan, s, month, runs, st)
     if out['state'] in ('done', 'done-with-problems') and not out['report']:
         out['state'] = 'missing'       # finished once, but the report file has since been moved or deleted
     if out['report'] and st and st.get('state') != 'running':
@@ -257,8 +268,12 @@ def overview():
     cutoff = a.latest()
     last = stamp(cutoff).strftime('%Y-%m')
     fp, snap = current_fingerprint(), jobs.snapshot()
-    months = [month_state(m, cutoff, fp, snap) for m in month_list(_first_month(), last)]
-    done = [m for m in months if m['tokens'] and m['state'] in ('done', 'done-with-problems', 'missing')]
+    root = Path(config.load_settings()['output_root'])
+    runs = history(root)
+    months = [month_state(m, cutoff, fp, snap, runs) for m in month_list(_first_month(), last)]
+    # The average a budget is suggested from: months made wholly through the interfaces, which is what a budget caps.
+    done = [m for m in months if m['tokens'] and m['state'] in ('done', 'done-with-problems', 'missing')
+            and not receipts.external_blocks(root / m['month'])]
     recent = sorted(done, key=lambda m: m['month'])[-3:]
     avg = sum(m['tokens'] for m in recent) / len(recent) if recent else None
     return {'cutoff': cutoff, 'cutoff_text': stamp(cutoff - 1).strftime('%Y-%m-%d %H:%M'), 'months': months,
@@ -274,6 +289,7 @@ def month_plan(month: str):
     # Only what changes the counts and the estimate; prompt and model changes do not.
     known = {'selection': {fp.get('selection')}, 'settings': settings_digests(config.load_settings())}
     plan['stale'] = [FINGERPRINT_LABELS[k] for k in ('selection', 'settings') if plan.get('fingerprint', {}).get(k) not in known[k]]
+    plan['estimate'] = _plan_estimate(plan, config.load_settings(), month)
     return {'plan': plan}
 
 @app.get('/api/months/{month}/masks')
@@ -341,10 +357,14 @@ def delete_month(month: str, cache: int = 0):
 
 @app.get('/api/months/{month}/status')
 def month_status(month: str):
-    d = Path(config.load_settings()['output_root']) / month
+    s = config.load_settings()
+    d = Path(s['output_root']) / month
     _settle(d, month)
-    return {'status': read_json(d / 'status.json'), 'progress': read_json(d / 'progress.json'), 'handoff': _handoff(month),
-            'plan': read_json(d / 'plan.json'), 'locked': bool(lock_holder(config.load_settings()['output_root'], month))}
+    st, plan = read_json(d / 'status.json'), read_json(d / 'plan.json')
+    if plan:
+        plan['estimate'] = _plan_estimate(plan, s, month)
+    return {'status': st, 'progress': read_json(d / 'progress.json'), 'handoff': _handoff(month),
+            'plan': plan, 'locked': bool(lock_holder(s['output_root'], month))}
 
 def _handoff(month):
     """What waits for an external agent in a month's or 专题's handoff folder: how many tasks, how many results have
@@ -1055,10 +1075,12 @@ def usage():
                 ci = price.get('cached_input', price['input'])
                 cost = ((pin - cached) * price['input'] + cached * ci + pout * price['output']) / 1e6
             rows.append([int(ts), month, r['stage'], r.get('model_id') or r.get('model'), r.get('model'), 1 if ok else 0,
-                         pin, pout, cached, r.get('reasoning_tokens', 0), r.get('seconds', 0), cost, price.get('currency')])
+                         pin, pout, cached, r.get('reasoning_tokens', 0), r.get('seconds', 0), cost, price.get('currency'),
+                         1 if r.get('api') == 'external' else 0])
     rows.sort(key=lambda r: r[0])
     stage_labels = {**{st['key']: st['label'] for st in config.STAGES}, **topic.STAGE_LABELS}
-    return {'columns': ['ts', 'month', 'stage', 'model_id', 'model', 'ok', 'in', 'out', 'cached', 'reasoning', 'seconds', 'cost', 'currency'],
+    # external: 1 where an external agent answered; its tokens were never counted, so they are 0 here, not "none used".
+    return {'columns': ['ts', 'month', 'stage', 'model_id', 'model', 'ok', 'in', 'out', 'cached', 'reasoning', 'seconds', 'cost', 'currency', 'external'],
             'rows': rows, 'stage_labels': stage_labels, 'topics': titles, 'states': states,
             'since': since or None, 'hidden': sorted(hidden.values(), key=lambda h: h['owner'], reverse=True)}
 

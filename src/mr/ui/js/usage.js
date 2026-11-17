@@ -40,7 +40,8 @@ MRPages.usage = {
               <tr v-for="g in groups" :key="g.owner" class="pick" :class="{ on: pick === g.owner }" @click="pick = g.owner">
                 <td>{{ name(g.owner) }}<span class="chip accent" v-if="running(g.owner)" style="margin-left:6px">正在生成</span>
                   <span class="chip" :class="stateKind(data.states[g.owner])" v-else-if="unfinished(g.owner)" style="margin-left:6px" title="还没有生成完，这里是到目前为止用掉的">{{ stateText(data.states[g.owner]) }}</span>
-                  <span class="chip warn" v-if="kind === 'month' && budget && g.in + g.out > budget" style="margin-left:6px">超出预算</span></td>
+                  <span class="chip warn" v-if="kind === 'month' && budget && g.in + g.out > budget" style="margin-left:6px">超出预算</span>
+                  <span class="chip info" v-if="g.ext" style="margin-left:6px">外部 Agent</span></td>
                 <td class="r num">{{ fmtTok(g.in + g.out) }}</td><td class="r num">{{ money(g) }}</td>
                 <td class="r num">{{ fmtInt(g.calls) }}</td><td class="r num">{{ g.calls - g.ok || '' }}</td></tr>
             </tbody>
@@ -68,9 +69,12 @@ MRPages.usage = {
         <table class="t">
           <thead><tr><th>环节</th><th>模型</th><th class="r">占比</th><th class="r">token</th><th class="r">输入</th><th class="r">输出</th><th class="r">调用</th><th class="r">失败</th><th class="r">费用</th></tr></thead>
           <tbody><tr v-for="r in table" :key="r.stage + r.model">
-            <td>{{ label(r.stage) }}</td><td>{{ r.model }}</td><td class="r num">{{ pct(r.in + r.out, sum.in + sum.out) }}</td>
-            <td class="r num">{{ fmtTok(r.in + r.out) }}</td><td class="r num">{{ fmtTok(r.in) }}</td><td class="r num">{{ fmtTok(r.out) }}</td>
-            <td class="r num">{{ fmtInt(r.calls) }}</td><td class="r num">{{ r.calls - r.ok || '' }}</td><td class="r num">{{ money(r) }}</td>
+            <td>{{ label(r.stage) }}</td>
+            <td><span class="chip info" v-if="r.ext">外部 Agent</span><template v-else>{{ r.model }}</template></td>
+            <template v-if="r.ext"><td class="r muted" v-for="i in 4" :key="i">—</td></template>
+            <template v-else><td class="r num">{{ pct(r.in + r.out, sum.in + sum.out) }}</td>
+              <td class="r num">{{ fmtTok(r.in + r.out) }}</td><td class="r num">{{ fmtTok(r.in) }}</td><td class="r num">{{ fmtTok(r.out) }}</td></template>
+            <td class="r num">{{ fmtInt(r.calls) }}</td><td class="r num">{{ r.calls - r.ok || '' }}</td><td class="r num" :class="{ muted: r.ext }">{{ r.ext ? '—' : money(r) }}</td>
           </tr></tbody>
         </table>
       </div>
@@ -121,13 +125,14 @@ MRPages.usage = {
       const c = C.value;
       acc.calls++;
       if (!r[c.ok]) return acc;
+      if (r[c.external]) { acc.ok++; acc.ext++; return acc; }       // an external agent's answer: no tokens were counted
       acc.ok++; acc.in += r[c.in]; acc.out += r[c.out]; acc.cached += r[c.cached];
       if (r[c.cost] === null) acc.unpriced++;
       else if (r[c.currency] === 'local') { acc.priced = true; acc.local++; }
       else { acc.priced = true; const cur = r[c.currency] || 'USD'; acc.cost[cur] = (acc.cost[cur] || 0) + r[c.cost]; }
       return acc;
     }
-    const blank = extra => ({ calls: 0, ok: 0, in: 0, out: 0, cached: 0, unpriced: 0, local: 0, priced: false, cost: {}, ...extra });
+    const blank = extra => ({ calls: 0, ok: 0, in: 0, out: 0, cached: 0, unpriced: 0, local: 0, priced: false, cost: {}, ext: 0, ...extra });
     const money = s => { const e = Object.entries(s.cost || {}); return e.length ? e.map(([cur, v]) => fmtMoney(v, cur)).join(' + ') : s.local ? '不计费' : '—'; };
     const total = computed(() => kindRows.value.reduce(add, blank()));
     const sum = computed(() => rows.value.reduce(add, blank()));
@@ -140,7 +145,8 @@ MRPages.usage = {
     const table = computed(() => {
       const c = C.value, g = {};
       for (const r of rows.value) { const k = r[c.stage] + '|' + r[c.model_id]; add(g[k] = g[k] || blank({ stage: r[c.stage], model: r[c.model_id] }), r); }
-      return Object.values(g).sort((a, b) => (b.in + b.out) - (a.in + a.out));
+      // A stage the external agent did sits under that stage's counted rows: its zero is "not counted", not "least".
+      return Object.values(g).sort((a, b) => (b.in + b.out) - (a.in + a.out) || a.ext - b.ext);
     });
     // The one thing worth acting on: which stage takes most, and on which model.
     const insight = computed(() => {
@@ -196,9 +202,10 @@ MRPages.usage = {
       // Where the selected report's tokens went: stage × model.
       const m = chart('matrix', matrix.value);
       if (m) {
-        const st = [...new Set(table.value.map(r => r.stage))], md = [...new Set(table.value.map(r => r.model))].sort();
+        const counted = table.value.filter(r => !r.ext);       // an external agent's stages have no tokens to draw
+        const st = [...new Set(counted.map(r => r.stage))], md = [...new Set(counted.map(r => r.model))].sort();
         const cell = {};
-        table.value.forEach(r => { cell[r.stage + '|' + r.model] = r.in + r.out; });
+        counted.forEach(r => { cell[r.stage + '|' + r.model] = r.in + r.out; });
         m.setOption({ ...base(), grid: { left: 90, right: 18, top: 34, bottom: 24 },
           yAxis: { type: 'category', data: st.map(label), inverse: true, ...ax }, xAxis: { type: 'value', ...ax, axisLabel: { color: css('--text-3'), formatter: fmtTok } },
           series: md.map(x => ({ name: x, type: 'bar', stack: 't', barMaxWidth: 18, data: st.map(s => cell[s + '|' + x] || 0) })) }, true);
@@ -238,9 +245,10 @@ MRPages.usage = {
     // One line per call for the selection (or all of this kind); Excel opens it directly.
     async function exportCsv() {
       const c = C.value, q = v => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : v;
-      const head = ['时间', kindName.value, '环节', '模型', '模型名', '成功', '输入 token', '输出 token', '缓存输入 token', '推理 token', '秒数', '费用', '币种'];
-      const lines = [head.join(',')].concat(rows.value.map(r => [fmtTime(r[c.ts], true), name(r[c.month]), label(r[c.stage]), r[c.model_id], r[c.model], r[c.ok] ? '是' : '否',
-        r[c.in], r[c.out], r[c.cached], r[c.reasoning], r[c.seconds], r[c.cost] === null ? '' : r[c.cost].toFixed(6), r[c.currency] || ''].map(q).join(',')));
+      const head = ['时间', kindName.value, '环节', '模型', '模型名', '成功', '外部 Agent', '输入 token', '输出 token', '缓存输入 token', '推理 token', '秒数', '费用', '币种'];
+      // An external agent's answer has no counted tokens: those cells stay empty rather than 0.
+      const lines = [head.join(',')].concat(rows.value.map(r => { const x = r[c.external]; return [fmtTime(r[c.ts], true), name(r[c.month]), label(r[c.stage]), r[c.model_id], r[c.model], r[c.ok] ? '是' : '否', x ? '是' : '否',
+        x ? '' : r[c.in], x ? '' : r[c.out], x ? '' : r[c.cached], x ? '' : r[c.reasoning], r[c.seconds], x || r[c.cost] === null ? '' : r[c.cost].toFixed(6), x ? '' : r[c.currency] || ''].map(q).join(','); }));
       const text = lines.join('\r\n') + '\r\n';
       const file = `消息月报用量_${kindName.value}_${pick.value ? name(pick.value) : '全部'}.csv`.replace(/[\\/:*?"<>|]/g, '_');
       if (window.pywebview?.api?.save_text) {
