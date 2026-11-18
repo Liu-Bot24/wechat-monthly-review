@@ -28,6 +28,8 @@
   python -m mr select clear <会话…>          drop the hand-made choice for these chats
   python -m mr select skip-category <分类…>  skip whole categories
   python -m mr select read-category <分类…>  read them again
+
+  python -m mr plugin [<插件> [参数…]]       without a name: the installed plugins; with one: run its command (see plugins.py)
 """
 import argparse, json, sys, time
 from collections import defaultdict
@@ -178,6 +180,9 @@ def main(argv=None):
     s = sub.add_parser('select')
     s.add_argument('action', choices=['show', 'exclude', 'include', 'clear', 'skip-category', 'read-category'])
     s.add_argument('targets', nargs='*')
+    s = sub.add_parser('plugin')
+    s.add_argument('name', nargs='?')
+    s.add_argument('args', nargs=argparse.REMAINDER)
     args = p.parse_args(argv)
     if args.command == 'check':
         # Run by an agent in whatever terminal it has: needs no settings and no archive, and must not die on a character
@@ -199,6 +204,12 @@ def main(argv=None):
         return chats(settings, args.month, args.find, args.category, args.state, args.all)
     if args.command == 'select':
         return select(settings, args.action, args.targets)
+    if args.command == 'plugin':
+        from . import plugins
+        if not args.name:
+            print(f'插件文件夹：{plugins.folder()}\n已安装：' + ('、'.join(plugins.installed()) or '无'))
+            return 0
+        return plugins.command(args.name, args.args, settings, print)
     if args.command == 'topic':
         from .jobs import month_lock
         from .topic import TopicRun

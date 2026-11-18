@@ -1187,4 +1187,6 @@ class Pipeline:
         print(f'\n月报：{path}\n消耗 {models.used:,} token；失败 {len(failures)} 块')
         for stage, u in usage.items():
             print(f'  {stage:17} {u["model"]:15} {u["calls"]:5} 次  输入 {u["in"]:>11,}  输出 {u["out"]:>9,}  {u["seconds"] / 60:6.1f} 分钟（累计）')
+        from . import plugins
+        plugins.after_month(self.month, self.settings, self._say)
         return 0
