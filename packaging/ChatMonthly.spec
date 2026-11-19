@@ -1,5 +1,7 @@
 # PyInstaller spec for the installed program; tools\build.ps1 runs it from the build environment.
-# One folder, two programs sharing it: ChatMonthly.exe (the window) and mr.exe (the command line the window runs jobs with).
+# Two one-folder builds: ChatMonthly.exe (the window) with its files in 程序\, and mr.exe (the command line the window
+# runs jobs with) with its files beside itself; build.ps1 copies the second into 程序\, where both find the same runtime.
+# So the program folder has only ChatMonthly.exe at the top.
 from pathlib import Path
 
 REPO = Path(SPECPATH).parent
@@ -17,9 +19,9 @@ window = Analysis([str(Path(SPECPATH) / 'window.py')], pathex=[str(REPO / 'src')
 cli = Analysis([str(Path(SPECPATH) / 'cli.py')], pathex=[str(REPO / 'src')], excludes=EXCLUDES)
 
 window_exe = EXE(PYZ(window.pure), window.scripts, UTF8, exclude_binaries=True, name='ChatMonthly', icon=ICON,
-                 console=False, upx=False)
+                 console=False, upx=False, contents_directory='程序')
+COLLECT(window_exe, window.binaries, window.datas, name='ChatMonthly', upx=False)
 # Unbuffered, so a job's log shows progress as it happens.
 cli_exe = EXE(PYZ(cli.pure), cli.scripts, UTF8 + [('u', None, 'OPTION')], exclude_binaries=True, name='mr', icon=ICON,
-              console=True, upx=False)
-
-COLLECT(window_exe, window.binaries, window.datas, cli_exe, cli.binaries, cli.datas, name='ChatMonthly', upx=False)
+              console=True, upx=False, contents_directory='.')
+COLLECT(cli_exe, cli.binaries, cli.datas, name='mr-cli', upx=False)

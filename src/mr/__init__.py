@@ -2,11 +2,20 @@
 import sys
 from pathlib import Path
 
-__version__ = '1.2.1'
+__version__ = '1.2.2'
 
 # FROZEN: running from the installed program (PyInstaller) rather than from the repository.
-# ROOT holds prompts/ and spec/: the repository, or the bundle folder the installer puts next to the executables.
-# PROGRAM is the folder to show as the program's location.
+# The program folder has ChatMonthly.exe at the top and everything else in 程序\: mr.exe, prompts/, spec/ and the
+# runtime. ROOT holds prompts/ and spec/: the repository, or 程序\. PROGRAM is the program folder, shown as its location.
 FROZEN = getattr(sys, 'frozen', False)
+PROGRAM_DIR = '程序'
+
+
+def app_root():
+    """The folder ChatMonthly.exe is in, whichever of the two programs is running (mr.exe is in its 程序\\)."""
+    exe = Path(sys.executable).resolve()
+    return exe.parent.parent if exe.parent.name == PROGRAM_DIR else exe.parent
+
+
 ROOT = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parents[2]
-PROGRAM = Path(sys.executable).parent if FROZEN else ROOT
+PROGRAM = app_root() if FROZEN else ROOT

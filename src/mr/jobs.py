@@ -110,12 +110,12 @@ def notify(title, body):
 
 # ---------- the queue ----------
 def _mr():
-    """How to start `mr ...`: the installed console program beside the window's, or this Python with the repository's
+    """How to start `mr ...`: the installed console program in 程序\ (ROOT for both programs), or this Python with the repository's
     launcher. The launcher finds the package by itself, so the command also works where it is pasted: in an agent's
     shell, in any folder."""
     exe = Path(sys.executable)
     if FROZEN:
-        return [str(exe.with_name('mr.exe'))]
+        return [str(ROOT / 'mr.exe')]
     if exe.name.lower() == 'pythonw.exe' and (exe.parent / 'python.exe').exists():
         exe = exe.parent / 'python.exe'
     return [str(exe), str(ROOT / 'tools' / 'run_mr.py')]

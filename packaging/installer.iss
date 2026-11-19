@@ -46,8 +46,12 @@ UninstalledAll=已从这台电脑删除 %1。%n%n设置、接口与模型配置�
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [InstallDelete]
-; The bundle is replaced as a whole, so files a newer version no longer has do not linger.
+; The bundle is replaced as a whole, so files a newer version no longer has do not linger. Versions before 1.2.2 had
+; mr.exe, LICENSE.txt and _internal\ beside ChatMonthly.exe; now everything but ChatMonthly.exe is in 程序\.
+Type: filesandordirs; Name: "{app}\程序"
 Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\mr.exe"
+Type: files; Name: "{app}\LICENSE.txt"
 
 [Files]
 Source: "..\build\dist\{#AppFiles}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -61,4 +65,5 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "把聊�
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
+Type: filesandordirs; Name: "{app}\程序"
 Type: filesandordirs; Name: "{app}\_internal"

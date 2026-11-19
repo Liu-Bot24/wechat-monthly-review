@@ -11,7 +11,7 @@
 在 [Releases](https://github.com/Liu-Bot24/wechat-monthly-review/releases) 下载其中一种，两种的用户数据相同，可以互换：
 
 - **安装版** `ChatMonthly-<版本>-Setup.exe`：不需要管理员权限，默认装到 `%LOCALAPPDATA%\Programs\ChatMonthly\`，在开始菜单和桌面放"消息月报"（桌面图标可以在安装时取消）。升级时运行新版本的安装程序即可；卸载在 设置 › 应用 › 已安装的应用 中进行。
-- **绿色版** `ChatMonthly-<版本>-Portable.zip`：解压到任意文件夹，运行其中的 `ChatMonthly.exe`。设置都在程序旁边的 `配置\` 文件夹里，整个文件夹可以直接拷走。升级时先关闭窗口，用新版本的 `ChatMonthly.exe`、`mr.exe` 和 `_internal\` 替换旧的，保留 `配置\`。
+- **绿色版** `ChatMonthly-<版本>-Portable.zip`：解压到任意文件夹，运行其中的 `ChatMonthly.exe`。设置都在程序旁边的 `配置\` 文件夹里，整个文件夹可以直接拷走。文件夹里只有 `ChatMonthly.exe`、`配置\` 和 `程序\`（命令行 `mr.exe` 和运行所需的文件）。升级时先关闭窗口，用新版本的 `ChatMonthly.exe` 和 `程序\` 替换旧的，保留 `配置\`；1.2.1 及更早版本旁边的 `mr.exe`、`LICENSE.txt` 和 `_internal\` 删掉即可。
 
 升级、重装和卸载都不动你的设置和月报。
 
@@ -110,11 +110,11 @@
 
 ## 命令行
 
-界面做的每件事也可以用命令行完成，两者共用同一份配置。程序目录里有 `mr.exe`：
+界面做的每件事也可以用命令行完成，两者共用同一份配置。程序目录的 `程序\` 里有 `mr.exe`：
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\ChatMonthly\mr.exe" plan 2026-10      # 估算：只取数和分块，不调用模型
-& "$env:LOCALAPPDATA\Programs\ChatMonthly\mr.exe" run 2026-10       # 生成；中断后再次运行从断点继续
+& "$env:LOCALAPPDATA\Programs\ChatMonthly\程序\mr.exe" plan 2026-10      # 估算：只取数和分块，不调用模型
+& "$env:LOCALAPPDATA\Programs\ChatMonthly\程序\mr.exe" run 2026-10       # 生成；中断后再次运行从断点继续
 ```
 
 | 命令 | 作用 |

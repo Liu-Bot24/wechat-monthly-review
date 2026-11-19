@@ -53,12 +53,18 @@ $dist = Join-Path $Build 'dist'
 & $Python -m PyInstaller --noconfirm --clean --log-level WARN --distpath $dist --workpath (Join-Path $Build 'pyinstaller') (Join-Path $Repo 'packaging\ChatMonthly.spec')
 if ($LASTEXITCODE) { throw 'PyInstaller 打包失败，见上方输出。' }
 
+# The command line goes into 程序\ beside the window's runtime; files both builds have are the same.
+$app = Join-Path $dist 'ChatMonthly'
+Copy-Item -Path (Join-Path $dist 'mr-cli\*') -Destination (Join-Path $app '程序') -Recurse -Force
+
 # The packed command line loads the pipeline and the model client; a missing module shows up here, not after installing.
-$check = & (Join-Path $dist 'ChatMonthly\mr.exe') --help 2>&1
+$check = & (Join-Path $app '程序\mr.exe') --help 2>&1
 if ($LASTEXITCODE) { throw "打包后的 mr.exe 无法运行：`n$($check -join "`n")" }
 
 # The licence travels with the program: the installer and the portable zip both take the folder as it is now.
-Copy-Item (Join-Path $Repo 'LICENSE') (Join-Path $dist 'ChatMonthly\LICENSE.txt')
+Copy-Item (Join-Path $Repo 'LICENSE') (Join-Path $app '程序\LICENSE.txt')
+$top = @(Get-ChildItem $app | ForEach-Object Name)
+if ($top.Count -ne 2 -or 'ChatMonthly.exe' -notin $top -or '程序' -notin $top) { throw "顶层应只有 ChatMonthly.exe 和 程序，实际是：$($top -join '、')" }
 
 Write-Host '生成安装程序…'
 & $iscc /Q "/DAppVersion=$version" (Join-Path $Repo 'packaging\installer.iss')

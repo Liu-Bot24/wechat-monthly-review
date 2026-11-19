@@ -18,7 +18,8 @@ def _home():
     if os.environ.get('MR_HOME'):
         return Path(os.environ['MR_HOME'])
     if getattr(sys, 'frozen', False):
-        beside = Path(sys.executable).parent / PORTABLE
+        from . import app_root
+        beside = app_root() / PORTABLE
         if beside.is_dir():                 # the portable build: the configuration travels with the program folder
             return beside
     return Path(os.environ.get('APPDATA', Path.home())) / 'ChatMonthly'

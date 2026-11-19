@@ -90,6 +90,12 @@ class BundleTest(unittest.TestCase):
             self.assertEqual(config._home(), self.b / 'ChatMonthly')             # no 配置 folder: AppData
             (self.a / '配置').mkdir()
             self.assertEqual(config._home(), self.a / '配置')
+        # mr.exe runs from 程序\ inside the program folder and uses the same 配置.
+        (self.a / '程序').mkdir()
+        with mock.patch.dict('os.environ', {'MR_HOME': '', 'APPDATA': str(self.b)}), \
+             mock.patch.object(config.sys, 'frozen', True, create=True), \
+             mock.patch.object(config.sys, 'executable', str(self.a / '程序' / 'mr.exe')):
+            self.assertEqual(config._home(), self.a / '配置')
         with mock.patch.dict('os.environ', {'MR_HOME': '', 'APPDATA': str(self.b)}):
             self.assertEqual(config._home(), self.b / 'ChatMonthly')             # running from source: never the folder beside python
 
