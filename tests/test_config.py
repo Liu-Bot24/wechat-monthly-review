@@ -92,6 +92,42 @@ class BundleTest(unittest.TestCase):
         with mock.patch.dict('os.environ', {'MR_HOME': '', 'APPDATA': str(self.b)}):
             self.assertEqual(config._home(), self.b / 'ChatMonthly')             # running from source: never the folder beside python
 
+    def test_the_cache_is_kept_apart_from_the_configuration(self):
+        local = Path(self.tmp.name) / 'local'
+        exe = self.a / 'ChatMonthly.exe'
+        (self.a / '配置' / 'cache').mkdir(parents=True)
+        old = self.a / '配置' / 'cache'
+        for name, data in (('archive-index.sqlite', b'db'), ('archive-index.sqlite-wal', b'wal'), ('chat_stats.json', b'{}')):
+            (old / name).write_bytes(data)
+        env = {'MR_HOME': '', 'MR_CACHE': '', 'APPDATA': str(self.b), 'LOCALAPPDATA': str(local)}
+        with mock.patch.dict('os.environ', env), mock.patch.object(config.sys, 'frozen', True, create=True), \
+             mock.patch.object(config.sys, 'executable', str(exe)):
+            home = config._home()
+            with mock.patch.object(config, 'HOME', home):
+                # Another window holds the database open: nothing moves, the old place stays in use.
+                real = config.shutil.move
+                def busy(src, dst):
+                    if src.endswith('.sqlite'):
+                        raise PermissionError(src)
+                    return real(src, dst)
+                with mock.patch.object(config.shutil, 'move', busy):
+                    self.assertEqual(config.cache_dir(), old)
+                self.assertEqual(sorted(p.name for p in old.iterdir()), ['archive-index.sqlite', 'archive-index.sqlite-wal', 'chat_stats.json'])
+                self.assertEqual(list((local / 'ChatMonthly' / 'cache').iterdir()), [])
+                # Free again: everything moves together and the old folder goes.
+                new = config.cache_dir()
+                self.assertEqual(new, local / 'ChatMonthly' / 'cache')
+                self.assertEqual((new / 'archive-index.sqlite-wal').read_bytes(), b'wal')
+                self.assertFalse(old.exists())
+                # A later leftover is never mixed into a cache already in use.
+                old.mkdir()
+                (old / 'archive-index.sqlite-wal').write_bytes(b'other')
+                self.assertEqual(config.cache_dir(), new)
+                self.assertEqual((new / 'archive-index.sqlite-wal').read_bytes(), b'wal')
+                self.assertFalse(old.exists())
+        with mock.patch.object(config, 'HOME', self.b):
+            self.assertEqual(config.cache_dir(), self.b / 'cache')            # a home replaced in code keeps its cache
+
     def test_no_folder_of_this_machine_is_a_default(self):
         self.assertEqual(config.DEFAULTS['archive_root'], '')
         self.assertEqual(Path(config.DEFAULTS['output_root']).parent, Path.home())

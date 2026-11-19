@@ -200,7 +200,7 @@ class Archive:
         self.root = Path(root)
         if index is None:
             from . import config
-            index = config.HOME / 'cache' / 'archive-index.sqlite'
+            index = config.cache_dir() / 'archive-index.sqlite'
         Path(index).parent.mkdir(parents=True, exist_ok=True)
         self._lockfile = str(index) + '.lock'
         # The window's server shares one connection across its worker threads under its own lock.

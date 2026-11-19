@@ -876,7 +876,7 @@ def chat_stats():
     """Per chat, per month counts over the last 12 complete months, cached by archive cutoff."""
     a = archive()
     cutoff = a.latest()
-    path = config.HOME / 'cache' / 'chat_stats.json'
+    path = config.cache_dir() / 'chat_stats.json'
     cached = _cache.get('chat_stats') or read_json(path)
     if cached and cached.get('cutoff') == cutoff and cached.get('v') == 2:
         _cache['chat_stats'] = cached

@@ -25,6 +25,50 @@ def _home():
 
 HOME = _home()
 CREDENTIAL_SERVICE = 'ChatMonthly'
+
+
+def cache_dir():
+    """Where rebuildable data goes (the archive index, chat statistics): %LOCALAPPDATA%\\ChatMonthly\\cache, per machine,
+    so a configuration folder kept beside the program, perhaps inside the archive it reads, does not carry gigabytes
+    of derived files. A home set by MR_HOME or replaced in code keeps its cache inside it. A cache left in HOME by an
+    earlier version is moved over on first use; while that cannot be done (another window has it open) it stays in use."""
+    if os.environ.get('MR_CACHE'):
+        return Path(os.environ['MR_CACHE'])
+    old = HOME / 'cache'
+    if os.environ.get('MR_HOME') or HOME != _home():
+        return old
+    new = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local') / 'ChatMonthly' / 'cache'
+    if old.is_dir() and old.resolve() != new.resolve():
+        moved = []
+        try:
+            new.mkdir(parents=True, exist_ok=True)
+            # A new place already in use keeps its own files; a -wal from elsewhere must never join its database.
+            for src in ([] if any(new.iterdir()) else sorted(old.iterdir())):
+                if src.is_file():
+                    dst = new / src.name
+                    moved.append((src, dst))
+                    shutil.move(str(src), str(dst))     # across drives: a copy, then the original is removed
+        except OSError:
+            # All or nothing: a database must not end up apart from its -wal file.
+            for src, dst in reversed(moved):
+                try:
+                    if src.exists():
+                        dst.unlink(missing_ok=True)     # the original stayed (open elsewhere): drop the copy
+                    elif dst.exists():
+                        shutil.move(str(dst), str(src))
+                except OSError:
+                    pass
+            return old
+        for src in old.iterdir():
+            try:
+                src.unlink()                        # derived data the new place already has
+            except OSError:
+                pass
+        try:
+            old.rmdir()
+        except OSError:
+            pass
+    return new
 KEY_TYPES = ('none', 'credential')
 
 DEFAULTS = {
