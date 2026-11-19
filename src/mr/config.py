@@ -62,7 +62,14 @@ def _machine_dir(name):
         shutil.copytree(held, copy)
         if new.exists():
             new.rmdir()
-        copy.rename(new)
+        for attempt in range(20):
+            try:
+                copy.rename(new)
+                break
+            except PermissionError:             # a virus scanner looks at the files just written
+                if attempt == 19:
+                    raise
+                time.sleep(0.5)
     except OSError:
         shutil.rmtree(copy, ignore_errors=True)
         try:
