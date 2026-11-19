@@ -251,7 +251,7 @@ def main(argv=None):
 
     window.events.closing += closing
     window.events.shown += shown
-    webview.start(private_mode=False, storage_path=str(config.HOME / 'webview'))
+    webview.start(private_mode=False, storage_path=str(config.webview_dir()))
     server.jobs.close()
     srv.should_exit = True
     return 0

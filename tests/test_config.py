@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 import zipfile
@@ -97,34 +98,42 @@ class BundleTest(unittest.TestCase):
         exe = self.a / 'ChatMonthly.exe'
         (self.a / '配置' / 'cache').mkdir(parents=True)
         old = self.a / '配置' / 'cache'
-        for name, data in (('archive-index.sqlite', b'db'), ('archive-index.sqlite-wal', b'wal'), ('chat_stats.json', b'{}')):
-            (old / name).write_bytes(data)
+        (old / 'chat_stats.json').write_bytes(b'{}')
         env = {'MR_HOME': '', 'MR_CACHE': '', 'APPDATA': str(self.b), 'LOCALAPPDATA': str(local)}
         with mock.patch.dict('os.environ', env), mock.patch.object(config.sys, 'frozen', True, create=True), \
              mock.patch.object(config.sys, 'executable', str(exe)):
             home = config._home()
+            new = local / 'ChatMonthly' / 'cache'
             with mock.patch.object(config, 'HOME', home):
-                # Another window holds the database open: nothing moves, the old place stays in use.
-                real = config.shutil.move
-                def busy(src, dst):
-                    if src.endswith('.sqlite'):
-                        raise PermissionError(src)
-                    return real(src, dst)
-                with mock.patch.object(config.shutil, 'move', busy):
+                # Another window holds the database open: Windows refuses the rename, nothing moves.
+                db = sqlite3.connect(old / 'archive-index.sqlite')
+                db.execute('PRAGMA journal_mode=WAL'); db.execute('CREATE TABLE t(x)'); db.execute('INSERT INTO t VALUES(1)'); db.commit()
+                self.assertEqual(config.cache_dir(), old)
+                db.close()
+                self.assertFalse(new.exists())
+                # The copy fails half way: the old folder is put back as it was.
+                with mock.patch.object(config.shutil, 'copytree', side_effect=OSError('disk full')):
                     self.assertEqual(config.cache_dir(), old)
-                self.assertEqual(sorted(p.name for p in old.iterdir()), ['archive-index.sqlite', 'archive-index.sqlite-wal', 'chat_stats.json'])
-                self.assertEqual(list((local / 'ChatMonthly' / 'cache').iterdir()), [])
+                self.assertTrue((old / 'chat_stats.json').exists())
+                self.assertFalse(new.exists())
                 # Free again: everything moves together and the old folder goes.
-                new = config.cache_dir()
-                self.assertEqual(new, local / 'ChatMonthly' / 'cache')
-                self.assertEqual((new / 'archive-index.sqlite-wal').read_bytes(), b'wal')
+                self.assertEqual(config.cache_dir(), new)
+                db = sqlite3.connect(new / 'archive-index.sqlite')
+                self.assertEqual(db.execute('SELECT x FROM t').fetchall(), [(1,)])     # the -wal came along
+                db.close()
                 self.assertFalse(old.exists())
                 # A later leftover is never mixed into a cache already in use.
                 old.mkdir()
                 (old / 'archive-index.sqlite-wal').write_bytes(b'other')
                 self.assertEqual(config.cache_dir(), new)
-                self.assertEqual((new / 'archive-index.sqlite-wal').read_bytes(), b'wal')
                 self.assertFalse(old.exists())
+                # A move cut off after the rename in place is redone on the next start.
+                profile = home / 'webview'
+                (home / 'webview.moving' / 'Default').mkdir(parents=True)
+                (home / 'webview.moving' / 'Default' / 'Local State').write_text('x', encoding='utf-8')
+                self.assertEqual(config.webview_dir(), local / 'ChatMonthly' / 'webview')
+                self.assertEqual((local / 'ChatMonthly' / 'webview' / 'Default' / 'Local State').read_text(encoding='utf-8'), 'x')
+                self.assertFalse(profile.exists() or (home / 'webview.moving').exists())
         with mock.patch.object(config, 'HOME', self.b):
             self.assertEqual(config.cache_dir(), self.b / 'cache')            # a home replaced in code keeps its cache
 

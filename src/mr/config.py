@@ -27,48 +27,63 @@ HOME = _home()
 CREDENTIAL_SERVICE = 'ChatMonthly'
 
 
-def cache_dir():
-    """Where rebuildable data goes (the archive index, chat statistics): %LOCALAPPDATA%\\ChatMonthly\\cache, per machine,
-    so a configuration folder kept beside the program, perhaps inside the archive it reads, does not carry gigabytes
-    of derived files. A home set by MR_HOME or replaced in code keeps its cache inside it. A cache left in HOME by an
-    earlier version is moved over on first use; while that cannot be done (another window has it open) it stays in use."""
-    if os.environ.get('MR_CACHE'):
-        return Path(os.environ['MR_CACHE'])
-    old = HOME / 'cache'
+def _machine_dir(name):
+    """%LOCALAPPDATA%\\ChatMonthly\\<name>, for data that belongs to this machine and can be rebuilt, so a configuration
+    folder kept beside the program, perhaps inside the archive it reads, does not carry gigabytes of it. A home set by
+    MR_HOME or replaced in code keeps the folder inside it.
+
+    A folder left in HOME by an earlier version is moved over on first use. It is first renamed in place, which
+    Windows refuses while another window has a file in it open; until then the old folder stays in use. The copy
+    becomes the new folder by one rename, so an interrupted move is either redone or finished on the next start."""
+    old = HOME / name
     if os.environ.get('MR_HOME') or HOME != _home():
         return old
-    new = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local') / 'ChatMonthly' / 'cache'
-    if old.is_dir() and old.resolve() != new.resolve():
-        moved = []
+    new = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local') / 'ChatMonthly' / name
+    held = HOME / (name + '.moving')
+    if new.is_dir() and any(new.iterdir()):
+        for leftover in (old, held):            # a move finished before; never mix old files into the new folder
+            if leftover.exists() and leftover.resolve() != new.resolve():
+                shutil.rmtree(leftover, ignore_errors=True)
+        return new
+    if held.is_dir() and not old.exists():
         try:
-            new.mkdir(parents=True, exist_ok=True)
-            # A new place already in use keeps its own files; a -wal from elsewhere must never join its database.
-            for src in ([] if any(new.iterdir()) else sorted(old.iterdir())):
-                if src.is_file():
-                    dst = new / src.name
-                    moved.append((src, dst))
-                    shutil.move(str(src), str(dst))     # across drives: a copy, then the original is removed
+            held.rename(old)                    # an earlier move stopped before it was done
         except OSError:
-            # All or nothing: a database must not end up apart from its -wal file.
-            for src, dst in reversed(moved):
-                try:
-                    if src.exists():
-                        dst.unlink(missing_ok=True)     # the original stayed (open elsewhere): drop the copy
-                    elif dst.exists():
-                        shutil.move(str(dst), str(src))
-                except OSError:
-                    pass
-            return old
-        for src in old.iterdir():
-            try:
-                src.unlink()                        # derived data the new place already has
-            except OSError:
-                pass
+            return held
+    if not old.is_dir():
+        return new
+    try:
+        old.rename(held)
+    except OSError:
+        return old                              # in use
+    copy = new.with_name(name + '.copying')
+    try:
+        shutil.rmtree(copy, ignore_errors=True)
+        shutil.copytree(held, copy)
+        if new.exists():
+            new.rmdir()
+        copy.rename(new)
+    except OSError:
+        shutil.rmtree(copy, ignore_errors=True)
         try:
-            old.rmdir()
+            held.rename(old)
         except OSError:
-            pass
+            return held
+        return old
+    shutil.rmtree(held, ignore_errors=True)
     return new
+
+
+def cache_dir():
+    """The archive index and chat statistics: rebuilt when missing (for a large archive the first time takes long)."""
+    if os.environ.get('MR_CACHE'):
+        return Path(os.environ['MR_CACHE'])
+    return _machine_dir('cache')
+
+
+def webview_dir():
+    """The window's browser profile."""
+    return _machine_dir('webview')
 KEY_TYPES = ('none', 'credential')
 
 DEFAULTS = {
