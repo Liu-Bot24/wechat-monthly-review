@@ -306,6 +306,7 @@ function tokensPerMinute() {
 }
 function jobName(j) {
   if (j.kind === 'asr') return '语音转写';
+  if (j.kind === 'plugin') return j.title || '插件任务';
   if (j.kind.startsWith('topic-')) return `专题「${j.title || '未命名'}」${{ 'topic-plan': '预览', 'topic-screen': '筛查', 'topic-run': '' }[j.kind]}`;
   return `${j.month} ${j.kind === 'plan' ? '估算' : '月报'}`;
 }

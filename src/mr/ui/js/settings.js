@@ -186,7 +186,7 @@ MRPages.settings = {
 <div class="page">
   <div class="page-head"><h1>设置</h1></div>
   <div class="tabs">
-    <button v-for="t in [['models', '接口与模型'], ['general', '常规'], ['advanced', '高级'], ['config', '配置文件'], ['diagnostics', '诊断']]" :key="t[0]" :class="{on: tab === t[0]}" @click="go('settings', t[0])">{{ t[1] }}</button>
+    <button v-for="t in [['models', '接口与模型'], ['general', '常规'], ['advanced', '高级'], ['plugins', '插件'], ['config', '配置文件'], ['diagnostics', '诊断']]" :key="t[0]" :class="{on: tab === t[0]}" @click="go('settings', t[0])">{{ t[1] }}</button>
   </div>
 
   <template v-if="tab === 'models' && m">
@@ -315,6 +315,39 @@ MRPages.settings = {
     </div>
   </template>
 
+  <template v-if="tab === 'plugins' && pl">
+    <div class="card pad form-card">
+      <div class="setting"><div><div class="k">安装插件</div><div class="help">插件是可选的附加功能，程序本身不带插件。选择插件包（.zip）安装；装过的插件再装一次就是升级，它的设置会保留。插件在本程序里运行，权限和本程序相同，只安装你信任的插件。</div></div>
+        <div class="ctl"><input class="input grow" v-model="plPath" placeholder="插件包（.zip）的位置"><button class="btn" v-if="canSave()" @click="pickPlugin"><Icon name="folder"/>选择</button>
+          <button class="btn primary" @click="installPlugin" :disabled="busy || !plPath.trim()">安装</button></div><div></div></div>
+    </div>
+    <div class="muted small" style="margin:14px 2px" v-if="!pl.plugins.length">还没有安装插件。</div>
+    <div class="card pad form-card" v-for="p in pl.plugins" :key="p.name" style="margin-top:14px">
+      <div class="card-head"><h2>{{ p.title }}</h2><span class="muted small" v-if="p.version">版本 {{ p.version }}</span><span class="spacer"></span>
+        <label class="row" style="gap:6px;cursor:pointer" v-if="!p.error || p.enabled"><input type="checkbox" :checked="p.enabled" :disabled="busy" @change="setPluginOn(p, $event.target.checked)">启用</label></div>
+      <div class="help" v-if="p.description" style="margin-bottom:10px;white-space:pre-wrap">{{ p.description }}</div>
+      <div class="banner bad" v-if="p.error"><Icon name="warn"/><div class="grow">{{ p.error }}</div></div>
+      <template v-if="!p.error">
+        <div class="setting" v-for="f in p.settings" :key="f.key"><div><div class="k">{{ f.label }}</div><div class="help" v-if="f.help">{{ f.help }}</div></div>
+          <div class="ctl"><input class="input grow" v-model="plEdit[p.name][f.key]">
+            <button class="btn" v-if="f.type === 'folder' && canPick()" @click="pickPluginFolder(p, f)"><Icon name="folder"/>选择</button>
+            <button class="btn ghost" v-if="f.type === 'folder' && plEdit[p.name][f.key]" @click="openPath(plEdit[p.name][f.key])">打开</button></div><div></div></div>
+        <div class="row" style="gap:8px;margin-top:6px" v-if="p.settings.length"><span class="spacer"></span>
+          <button class="btn primary" @click="savePlugin(p)" :disabled="busy || !pluginChanged(p)">保存设置</button></div>
+        <div class="setting" v-if="p.enabled"><div><div class="k">状态</div></div>
+          <div class="ctl"><span class="grow">{{ p.status ? p.status.text : '—' }}</span></div><div></div></div>
+        <div class="setting" v-if="!p.enabled"><div><div class="k">状态</div></div>
+          <div class="ctl"><span class="grow muted">已关闭，不会写任何文件。勾选右上角的「启用」开始使用。</span></div><div></div></div>
+        <div class="setting" v-if="p.enabled && p.actions.length"><div><div class="k">操作</div><div class="help">在任务队列里运行，进度在「任务」页。</div></div>
+          <div class="ctl" style="flex-direction:column;align-items:stretch;gap:8px"><div class="row" style="flex-wrap:wrap;gap:8px"><button v-for="a in p.actions" :key="a.id" class="btn" :class="{primary: p.status && p.status.todo === a.id}" @click="runPluginAction(p, a)">{{ a.label }}</button></div>
+            <div class="help" v-for="a in p.actions.filter(a => a.help)" :key="'h' + a.id">{{ a.label }}：{{ a.help }}</div></div><div></div></div>
+      </template>
+      <div class="row" style="gap:8px;margin-top:10px"><span class="spacer"></span>
+        <button class="btn ghost" @click="openPath(pl.folder + '\\\\' + p.name)">打开插件文件夹</button>
+        <button class="btn ghost danger" @click="uninstallPlugin(p)" :disabled="busy">卸载</button></div>
+    </div>
+  </template>
+
   <template v-if="tab === 'config' && cfg">
     <div class="card pad form-card">
       <div class="setting"><div><div class="k">配置目录</div><div class="help">接口与模型、各环节用的模型、常规和高级设置、读取范围、月报里的勾选都在这里。程序升级或重装不会动它。</div></div>
@@ -361,6 +394,60 @@ MRPages.settings = {
     const diag = ref(null), allProbes = ref(null), probing = ref(false);
     const cfg = ref(null), exportPath = ref(''), importPath = ref(''), busy = ref(false);
     const canSave = () => !!window.pywebview?.api?.pick_save;
+    const pl = ref(null), plPath = ref(''), plEdit = reactive({});
+    async function loadPlugins() {
+      try {
+        pl.value = await api('/api/plugins');
+        for (const p of pl.value.plugins) plEdit[p.name] = { ...p.values };
+      } catch (e) { fail(e); }
+    }
+    const pluginChanged = p => p.settings.some(f => (plEdit[p.name][f.key] || '') !== (p.values[f.key] || ''));
+    async function pickPlugin() { const p = await window.pywebview.api.pick_open('plugin'); if (p) plPath.value = p; }
+    async function pickPluginFolder(p, f) { const d = await pickFolder(plEdit[p.name][f.key]); if (d) plEdit[p.name][f.key] = d; }
+    async function installPlugin() {
+      busy.value = true;
+      try {
+        const r = await api('/api/plugins/install', { method: 'POST', body: { path: plPath.value } });
+        plPath.value = '';
+        toast(`已安装插件「${r.plugin.title}」`, 'ok');
+        await loadPlugins();
+      } catch (e) { fail(e); }
+      busy.value = false;
+    }
+    async function configurePlugin(p, body, done) {
+      busy.value = true;
+      try {
+        const r = await api(`/api/plugins/${encodeURIComponent(p.name)}`, { method: 'PUT', body });
+        toast(r.message || done, 'ok');
+        await loadPlugins();
+      } catch (e) { fail(e); await loadPlugins(); }
+      busy.value = false;
+    }
+    function setPluginOn(p, on) {
+      const body = { enabled: on };
+      if (on && pluginChanged(p)) body.values = { ...plEdit[p.name] };
+      return configurePlugin(p, body, on ? `插件「${p.title}」已启用` : `插件「${p.title}」已关闭`);
+    }
+    function savePlugin(p) { return configurePlugin(p, { values: { ...plEdit[p.name] } }, '设置已保存'); }
+    async function runPluginAction(p, a) {
+      if (pluginChanged(p)) { toast('先保存设置', 'warn'); return; }
+      const r = await addJobs([{ kind: 'plugin', plugin: p.name, action: a.id }]);
+      if (r && r.added.length) toast(`已加入任务队列：${p.title} · ${a.label}`, 'ok');
+    }
+    async function uninstallPlugin(p) {
+      const data = p.data_paths || [];
+      const r = await confirmBox(`卸载插件「${p.title}」`,
+        '插件的程序和设置会移到回收站。' + (data.length ? `\n\n它写出的文件在：\n${data.join('\n')}\n不勾选下面这一项时，这些文件留着不动。` : ''),
+        { ok: '卸载', danger: true, check: data.length ? '同时把它写出的文件移到回收站' : null });
+      if (!r) return;
+      busy.value = true;
+      try {
+        await api(`/api/plugins/${encodeURIComponent(p.name)}/uninstall`, { method: 'POST', body: { with_data: !!(r && r.checked) } });
+        toast(`插件「${p.title}」已卸载，文件在回收站`, 'ok');
+        await loadPlugins();
+      } catch (e) { fail(e); }
+      busy.value = false;
+    }
     async function loadConfig() { try { cfg.value = await api('/api/config'); if (!exportPath.value) exportPath.value = cfg.value.export_path; if (!importPath.value) importPath.value = cfg.value.import_path; } catch (e) { fail(e); } }
     async function pickExport() { const p = await window.pywebview.api.pick_save(exportPath.value, 'zip'); if (p) exportPath.value = p; }
     async function pickImport(kind) { const p = kind === 'dir' ? await pickFolder('') : await window.pywebview.api.pick_open('zip'); if (p) importPath.value = p; }
@@ -479,16 +566,18 @@ MRPages.settings = {
       probing.value = false;
     }
     function openDir(p) { openPath(p + '\\README.md', true); }
+    onJobEnd(rec => { if (rec.kind === 'plugin' && tab.value === 'plugins') loadPlugins(); });
     watch(tab, t => {
       if (t === 'models') { loadModels().catch(fail); loadExternal().catch(fail); }
       if (t === 'general') { loadGeneral().catch(fail); loadZoom(); }
       if (t === 'advanced') loadAdvanced().catch(fail);
       if (t === 'config') loadConfig();
+      if (t === 'plugins') loadPlugins();
       if (t === 'diagnostics') loadDiag();
     }, { immediate: true });
     return { tab, m, dlg, probes, g, adv, budgetOn, budgetM, diag, allProbes, probing, store, NEEDS, ADVANCED,
              setStage, setSwitch, setFallback, setFallbackOn, probe, delProvider, delModel, moveModel, usedBy, keyText, priceText, loadGeneral, saveGeneral, defaultOf,
              loadAdvanced, saveAdvanced, pick, pickExe, canPick, canSave, ZOOMS, zoom, setZoom, probeAll, openPath, openDir, go,
-             cfg, exportPath, importPath, busy, pickExport, pickImport, doExport, doImport, x, loadExternal, saveExternal, pickExternal };
+             cfg, exportPath, importPath, busy, pl, plPath, plEdit, pluginChanged, pickPlugin, pickPluginFolder, installPlugin, setPluginOn, savePlugin, runPluginAction, uninstallPlugin, pickExport, pickImport, doExport, doImport, x, loadExternal, saveExternal, pickExternal };
   },
 };

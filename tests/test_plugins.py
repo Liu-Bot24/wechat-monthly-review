@@ -1,8 +1,8 @@
 """Plugins: optional, found only in the configuration's 插件 folder, and never able to fail a month."""
-import tempfile, unittest
+import json, tempfile, unittest, zipfile
 from pathlib import Path
 from unittest import mock
-from mr import config, plugins
+from mr import config, jobs, plugins
 from mr.__main__ import main
 
 
@@ -58,6 +58,52 @@ class PluginsTest(unittest.TestCase):
         with mock.patch('builtins.print') as out:
             self.assertEqual(main(['plugin', '甲', '2026-10', 'all']), 0)
             out.assert_called_with('跑了 2026-10,all')
+
+    def zip_(self, files, name='包.zip'):
+        path = config.HOME / name
+        config.HOME.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, 'w') as z:
+            for n, t in files.items():
+                z.writestr(n, t)
+        return path
+
+    def test_install_from_a_package_starts_off_and_runs_once_turned_on(self):
+        pkg = self.zip_({'乙/plugin.json': json.dumps({'name': '乙', 'title': '插件乙', 'version': '1.0', 'settings': [{'key': 'where', 'label': '位置'}],
+                                                        'actions': [{'id': 'go', 'label': '运行'}]}),
+                         '乙/plugin.py': 'def defaults(s): return {"where": "默认"}\n'
+                                        'def prepare(s, v): return "准备好了 " + v["where"]\n'
+                                        'def after_month(month, settings, say): say("乙 " + month)\n'})
+        self.assertEqual(plugins.install(pkg), '乙')
+        self.assertFalse(plugins.enabled('乙'))
+        plugins.after_month('2026-10', {}, self.said.append)
+        self.assertEqual(self.said, [])
+        info = plugins.info('乙', {})
+        self.assertEqual((info['title'], info['values'], info['actions'][0]['id']), ('插件乙', {'where': '默认'}, 'go'))
+        self.assertEqual(plugins.configure('乙', {}, enabled=True), '准备好了 默认')
+        plugins.after_month('2026-10', {}, self.said.append)
+        self.assertEqual(self.said, ['乙 2026-10'])
+        with self.assertRaises(plugins.PluginError):
+            plugins.configure('乙', {}, new_values={'别的': 1})
+
+    def test_packages_that_are_refused(self):
+        bad = {
+            'no manifest': {'丙/plugin.py': ''},
+            'no code': {'丙/plugin.json': json.dumps({'name': '丙'})},
+            'bad name': {'plugin.json': json.dumps({'name': '../丙'}), 'plugin.py': ''},
+            'unsafe path': {'plugin.json': json.dumps({'name': '丙'}), 'plugin.py': '', '../逃出.py': ''},
+            'too new': {'plugin.json': json.dumps({'name': '丙', 'requires': '99.0.0'}), 'plugin.py': ''},
+        }
+        for why, files in bad.items():
+            with self.subTest(why), self.assertRaises(plugins.PluginError):
+                plugins.install(self.zip_(files))
+        self.assertEqual(plugins.installed(), [])
+        self.assertFalse((config.HOME.parent / '逃出.py').exists())
+
+    def test_a_plugin_action_is_a_job(self):
+        job = {'kind': 'plugin', 'plugin': '甲', 'action': 'backfill'}
+        self.assertEqual(jobs.command(job), ['plugin', '甲', 'backfill'])
+        self.assertIn('plugin', jobs.LIGHT)
+        self.assertEqual(jobs.log_path('D:/月报', job), config.HOME / '插件' / '甲' / 'run.log')
 
 
 if __name__ == '__main__':

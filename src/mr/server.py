@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from . import PROGRAM, ROOT, __version__, config, external, receipts, source, voice
+from . import PROGRAM, ROOT, __version__, config, external, plugins, receipts, source, voice
 from .archive import Archive, TZ, ancestors, location_problem, media_id, media_kind, media_path, month_bounds, stamp
 from . import topic
 from .jobs import LANES, TOPIC_KINDS, Jobs, _mr, lock_holder
@@ -44,6 +44,10 @@ async def guard(request: Request, call_next):
 
 @app.exception_handler(config.ConfigError)
 async def config_error(request, e):
+    return JSONResponse({'error': str(e)}, status_code=400)
+
+@app.exception_handler(plugins.PluginError)
+async def plugin_error(request, e):
     return JSONResponse({'error': str(e)}, status_code=400)
 
 @app.exception_handler(HTTPException)
@@ -434,6 +438,18 @@ def add_jobs(body: dict = Body(...)):
     items = body.get('jobs') or []
     handed = config.load_settings().get('external_stages') or []
     for j in items:
+        if j.get('kind') == 'plugin':
+            name, action = j.get('plugin'), j.get('action')
+            if name not in plugins.installed():
+                fail(404, f'没有安装插件 {name}')
+            if not plugins.enabled(name):
+                fail(409, f'插件 {name} 已关闭，先在 设置 › 插件 里打开')
+            m = plugins.manifest(name)
+            act = next((a for a in m['actions'] if a['id'] == action), None)
+            if not act:
+                fail(400, f'插件 {m["title"]} 没有这项操作')
+            j.update(title=f'{m["title"]} · {act["label"]}')
+            continue
         if j.get('kind') in ('run', 'topic-run', 'topic-screen'):
             agent = bool(j.pop('agent', False))
             if agent and not handed:
@@ -1276,6 +1292,32 @@ def config_export(body: dict = Body(...)):
 @app.post('/api/config/import')
 def config_import(body: dict = Body(...)):
     return config.import_config(str(body.get('path') or '').strip().strip('"'))
+
+# ---------- plugins ----------
+@app.get('/api/plugins')
+def plugin_list():
+    s = config.load_settings()
+    return {'folder': str(plugins.folder()), 'plugins': [plugins.info(n, s) for n in plugins.installed()]}
+
+@app.post('/api/plugins/install')
+def plugin_install(body: dict = Body(...)):
+    path = str(body.get('path') or '').strip().strip('"')
+    if not path:
+        fail(400, '选择插件包（.zip）')
+    name = plugins.install(path)
+    return {'name': name, 'plugin': plugins.info(name, config.load_settings())}
+
+@app.put('/api/plugins/{name}')
+def plugin_configure(name: str, body: dict = Body(...)):
+    s = config.load_settings()
+    line = plugins.configure(name, s, enabled=body.get('enabled'), new_values=body.get('values'))
+    return {'message': line, 'plugin': plugins.info(name, s)}
+
+@app.post('/api/plugins/{name}/uninstall')
+def plugin_uninstall(name: str, body: dict = Body(default={})):
+    if any(j.get('kind') == 'plugin' and j.get('plugin') == name for j in [jobs.data.get(l) for l in LANES] if j):
+        fail(409, '这个插件的任务正在运行，先停止它')
+    return {'removed': plugins.uninstall(name, config.load_settings(), with_data=bool(body.get('with_data')))}
 
 @app.get('/api/diagnostics')
 def diagnostics():

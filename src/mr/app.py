@@ -173,7 +173,7 @@ class Bridge:
 
     def pick_open(self, kind=''):
         import webview
-        types = {'zip': ('配置文件 (*.zip)', '所有文件 (*.*)')}.get(kind, ('所有文件 (*.*)',))
+        types = {'zip': ('配置文件 (*.zip)', '所有文件 (*.*)'), 'plugin': ('插件包 (*.zip)', '所有文件 (*.*)')}.get(kind, ('所有文件 (*.*)',))
         r = self._window.create_file_dialog(webview.OPEN_DIALOG, file_types=types)
         return r[0] if r else None
 

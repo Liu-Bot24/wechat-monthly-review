@@ -155,7 +155,7 @@ table.t tfoot td { font-weight: 600; background: var(--panel-2); }
 
 /* overlays */
 .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; max-width: 420px; }
-.toast { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--radius); padding: 10px 14px; display: flex; gap: 10px; align-items: flex-start; white-space: pre-wrap; animation: rise .2s; }
+.toast { overflow-wrap: anywhere; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--radius); padding: 10px 14px; display: flex; gap: 10px; align-items: flex-start; white-space: pre-wrap; animation: rise .2s; }
 .toast.bad { border-left: 3px solid var(--bad); } .toast.ok { border-left: 3px solid var(--ok); } .toast.warn { border-left: 3px solid var(--warn); }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
 .modal-back { position: fixed; inset: 0; background: rgba(10,14,22,.45); display: flex; align-items: center; justify-content: center; z-index: 900; padding: 24px; }

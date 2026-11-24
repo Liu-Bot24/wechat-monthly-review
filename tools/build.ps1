@@ -81,3 +81,10 @@ $beside = New-Item -ItemType Directory -Force (Join-Path $dist 'ChatMonthly\配�
 Compress-Archive -Path (Join-Path $dist 'ChatMonthly') -DestinationPath $portable -CompressionLevel Optimal
 Remove-Item $beside                                           # empty, and made by this script just above
 Write-Host "已生成 $portable（$([math]::Round((Get-Item $portable).Length / 1MB, 1)) MB）"
+
+# Each plugin under plugins\ becomes its own package, installed separately in 设置 › 插件.
+foreach ($manifest in Get-ChildItem (Join-Path $Repo 'plugins\*\plugin.json')) {
+    $zip = & $Python (Join-Path $Repo 'tools\package_plugin.py') $manifest.Directory.FullName (Join-Path $Repo 'dist')
+    if ($LASTEXITCODE) { throw "插件包生成失败：$($manifest.Directory.Name)" }
+    Write-Host "已生成 $zip"
+}
