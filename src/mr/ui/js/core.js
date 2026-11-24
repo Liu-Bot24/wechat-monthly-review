@@ -240,6 +240,44 @@ const SourceModal = {
   },
 };
 
+// An older version's material folder still to be arranged into the 月报 folder's three subfolders (layout.py).
+const LayoutBanner = {
+  components: { Icon },
+  template: `
+<div class="banner info" v-if="st && st.arranging"><span class="spinner"></span><div class="grow">正在整理月报文件夹，完成前不能添加其他任务。</div></div>
+<div class="banner warn" v-else-if="st && st.legacy && st.problem"><Icon name="warn"/>
+  <div class="grow">旧版的月报材料在 <span class="mono">{{ st.legacy }}</span>，暂时不能整理成新结构：{{ st.problem }}</div>
+  <button class="btn sm ghost" @click="dismiss">不再提示</button></div>
+<div class="banner warn" v-else-if="st && st.legacy"><Icon name="info"/>
+  <div class="grow">旧版的月报材料还在 <span class="mono">{{ st.legacy }}</span>（{{ st.months }} 个月份）。这一版的月报文件夹分成正式月报、原始材料和月度索引三个子文件夹，整理以后这些月份才会出现在程序里。</div>
+  <button class="btn sm primary" @click="arrange">整理成新结构</button><button class="btn sm ghost" @click="dismiss">不再提示</button></div>`,
+  setup() {
+    const st = ref(null);
+    async function load() { try { st.value = await api('/api/layout'); } catch (e) { st.value = null; } }
+    async function arrange() {
+      const s = st.value;
+      if (!await confirmBox('整理成新结构', `旧文件夹里的全部内容移到原始材料文件夹：
+${s.material}
+
+每个月的月报另存一份到正式月报文件夹，其中指向归档的链接按新位置改好：
+${s.final}
+
+旧文件夹和原始材料文件夹不在同一个磁盘时，先复制，再把旧文件夹移到回收站。整理期间不能运行其他任务。`, { ok: '开始整理' })) return;
+      try { await api('/api/layout/arrange', { method: 'POST', body: {} }); pollJobs(); load(); } catch (e) { fail(e); }
+    }
+    async function dismiss() {
+      if (!await confirmBox('不再提示', '旧文件夹保持原样，不移动也不删除。其中的月份不会出现在程序里，以后也不再提醒整理。', { ok: '不再提示' })) return;
+      try { st.value = await api('/api/layout/dismiss', { method: 'POST', body: {} }); } catch (e) { fail(e); }
+    }
+    onMounted(load);
+    onJobEnd(rec => {
+      if (rec.kind !== 'layout') return;
+      load(); loadOverview();
+    });
+    return { st, arrange, dismiss };
+  },
+};
+
 /* ---------- shared state, polled ---------- */
 const store = reactive({
   jobs: { queue: [], history: [], current: null }, overview: null, overviewError: null, overviewReading: null, settings: null, models: null, connected: true,
@@ -307,6 +345,7 @@ function tokensPerMinute() {
 function jobName(j) {
   if (j.kind === 'asr') return '语音转写';
   if (j.kind === 'plugin') return j.title || '插件任务';
+  if (j.kind === 'layout') return '整理月报文件夹';
   if (j.kind.startsWith('topic-')) return `专题「${j.title || '未命名'}」${{ 'topic-plan': '预览', 'topic-screen': '筛查', 'topic-run': '' }[j.kind]}`;
   return `${j.month} ${j.kind === 'plan' ? '估算' : '月报'}`;
 }

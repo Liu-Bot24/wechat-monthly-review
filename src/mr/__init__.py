@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-__version__ = '1.3.0'
+__version__ = '1.4.0'
 
 # FROZEN: running from the installed program (PyInstaller) rather than from the repository.
 # The program folder has ChatMonthly.exe at the top and everything else in 程序\: mr.exe, prompts/, spec/ and the

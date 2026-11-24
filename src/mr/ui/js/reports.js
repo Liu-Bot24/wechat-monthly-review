@@ -298,7 +298,11 @@ MRPages.reports = {
       else if (href.startsWith('#')) { const el = body.value.querySelector(href); if (el) el.scrollIntoView(); }
       else if (href) {
         const base = report.value.path.replace(/[\\/][^\\/]*$/, '');
-        openPath(base + '\\' + decodeURIComponent(href.replace(/^<|>$/g, '').split('#')[0]).replace(/\//g, '\\'));
+        // Folder names may hold a '#': only what follows the last '#', with no '/' in it, is a fragment.
+        const target = href.replace(/^<|>$/g, ''), cut = target.lastIndexOf('#');
+        const frag = cut < 0 ? '' : target.slice(cut + 1);
+        const path = frag && !/[\\/]/.test(frag) ? target.slice(0, cut) : target;
+        openPath(base + '\\' + decodeURIComponent(path).replace(/\//g, '\\'));
       }
     }
     function jump(id) {

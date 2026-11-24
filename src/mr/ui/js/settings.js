@@ -181,7 +181,7 @@ const getPath = (o, p) => p.split('.').reduce((x, k) => x?.[k], o);
 function setPath(o, p, v) { const ks = p.split('.'); let x = o; ks.slice(0, -1).forEach(k => { x[k] = x[k] || {}; x = x[k]; }); x[ks[ks.length - 1]] = v; }
 
 MRPages.settings = {
-  components: { Icon, ProviderDialog, ModelDialog },
+  components: { Icon, ProviderDialog, ModelDialog, LayoutBanner },
   template: `
 <div class="page">
   <div class="page-head"><h1>设置</h1></div>
@@ -277,15 +277,18 @@ MRPages.settings = {
   </template>
 
   <template v-if="tab === 'general' && g">
+    <LayoutBanner style="max-width:1240px"/>
     <div class="card pad form-card">
       <div class="setting" v-if="zoom !== null"><div><div class="k">界面大小</div><div class="help">立即生效，下次打开时保持。也可以按住 Ctrl 滚动鼠标滚轮，或按 Ctrl+加号 / 减号，Ctrl+0 恢复 100%。</div></div>
         <div class="ctl"><div class="seg"><button v-for="z in ZOOMS" :key="z" :class="{on: Math.abs(zoom - z) < 0.01}" @click="setZoom(z)">{{ Math.round(z * 100) }}%</button></div>
           <span class="muted small" v-if="!ZOOMS.some(z => Math.abs(zoom - z) < 0.01)">当前 {{ Math.round(zoom * 100) }}%</span></div><div></div></div>
       <div class="setting"><div><div class="k">归档目录</div><div class="help">聊天记录归档所在的文件夹。程序读取其中的聊天记录 Markdown，不修改它们；只在转写语音时，把文字存成语音文件旁边的同名 .txt。</div></div>
         <div class="ctl"><input class="input grow" v-model="g.archive_root"><button class="btn" v-if="canPick()" @click="pick('archive_root')"><Icon name="folder"/>选择</button></div><div></div></div>
-      <div class="setting"><div><div class="k">输出目录</div><div class="help">月报、专题、缓存和用量记录放在这里。月报引用聊天内容，不建议选会被网盘同步的文件夹。</div></div>
-        <div class="ctl"><input class="input grow" v-model="g.output_root"><button class="btn" v-if="canPick()" @click="pick('output_root')"><Icon name="folder"/>选择</button>
-          <button class="btn ghost" @click="openPath(g.output_root)">打开</button></div><div></div></div>
+      <div class="setting"><div><div class="k">月报文件夹</div><div class="help">里面有三个子文件夹：正式月报放每个月的月报；原始材料放生成过程中的缓存、专题、用量记录和语音转写进度；月度索引由月度索引插件生成。没有另选时跟随归档目录，用归档目录里的“月报”文件夹。月报引用聊天内容，和归档一样需要妥善保管。</div></div>
+        <div class="ctl"><input class="input grow" :value="reportsShown" @input="e => { g.reports_root = e.target.value; g.follow = false; }" :placeholder="g.archive_root ? '' : '先选择归档目录'">
+          <button class="btn" v-if="canPick()" @click="pickReports"><Icon name="folder"/>选择</button>
+          <button class="btn ghost" v-if="!g.follow" @click="g.follow = true">跟随归档目录</button>
+          <button class="btn ghost" :disabled="!reportsShown" @click="openPath(reportsShown)">打开</button></div><div></div></div>
       <div class="setting"><div><div class="k">每月 token 预算</div><div class="help">每个月份累计用到这个值时自动暂停，可以在运行页追加预算继续。用量页会根据最近几期给出建议值。</div></div>
         <div class="ctl"><div class="seg"><button :class="{on: !budgetOn}" @click="budgetOn = false">不限</button><button :class="{on: budgetOn}" @click="budgetOn = true">指定</button></div>
           <template v-if="budgetOn"><input class="input num" style="width:110px" v-model="budgetM"><span>M（百万 token）</span></template></div><div></div></div>
@@ -361,7 +364,7 @@ MRPages.settings = {
           <button class="btn" v-if="canPick()" @click="pickImport('dir')"><Icon name="folder"/>选择目录</button>
           <button class="btn primary" @click="doImport" :disabled="busy || !importPath.trim()">导入</button></div><div></div></div>
     </div>
-    <div class="banner info" style="margin-top:14px"><Icon name="info"/><div class="grow">密钥不在配置文件里。它们保存在 Windows 凭据管理器中，同一台电脑上导入后可以直接使用；换到另一台电脑，要在"接口与模型"里重新填写密钥。月报、专题、用量记录和语音转写在输出目录中，不随配置导出。</div></div>
+    <div class="banner info" style="margin-top:14px"><Icon name="info"/><div class="grow">密钥不在配置文件里。它们保存在 Windows 凭据管理器中，同一台电脑上导入后可以直接使用；换到另一台电脑，要在"接口与模型"里重新填写密钥。月报、专题、用量记录和语音转写在月报文件夹中，不随配置导出。</div></div>
   </template>
 
   <template v-if="tab === 'diagnostics'">
@@ -370,7 +373,8 @@ MRPages.settings = {
         <tr><td style="width:200px">版本</td><td>{{ diag.version }}（Python {{ diag.python }}）</td><td></td></tr>
         <tr><td>程序目录</td><td class="mono">{{ diag.program }}</td><td class="r"><button class="btn sm" @click="openDir(diag.program)">打开</button></td></tr>
         <tr><td>配置目录</td><td class="mono">{{ diag.home }}</td><td class="r"><button class="btn sm" @click="openPath(diag.home)">打开</button></td></tr>
-        <tr><td>输出目录</td><td class="mono">{{ diag.output_root }}</td><td class="r"><button class="btn sm" @click="openPath(diag.output_root)">打开</button></td></tr>
+        <tr><td>月报文件夹</td><td class="mono">{{ diag.reports_root || '未确定（还没有设置归档目录）' }}</td><td class="r"><button class="btn sm" v-if="diag.reports_root" @click="openPath(diag.reports_root)">打开</button></td></tr>
+        <tr><td>原始材料</td><td class="mono">{{ diag.output_root || '—' }}</td><td class="r"><button class="btn sm" v-if="diag.output_root" @click="openPath(diag.output_root)">打开</button></td></tr>
         <tr><td>归档目录</td><td><span :style="{color: diag.archive.ok ? 'var(--ok)' : 'var(--bad)'}">{{ diag.archive.ok ? '正常' : '找不到' }}</span> <span class="mono">{{ diag.archive.path }}</span>
           <div class="small muted" v-if="diag.archive.cutoff">{{ diag.archive.chats }} 个会话 · 最新消息 {{ diag.archive.cutoff }}</div>
           <div class="small muted" v-else-if="diag.archive.problem">{{ diag.archive.problem }}</div></td><td></td></tr>
@@ -523,11 +527,15 @@ MRPages.settings = {
     async function loadGeneral() {
       const r = await loadSettings();
       const s = r.settings;
-      g.value = { archive_root: s.archive_root, output_root: s.output_root, concurrency: s.concurrency, notify: s.notify, markdown_viewer: s.markdown_viewer || '' };
+      g.value = { archive_root: s.archive_root, reports_root: s.reports_root_custom ? s.reports_root : '', follow: !s.reports_root_custom, concurrency: s.concurrency, notify: s.notify, markdown_viewer: s.markdown_viewer || '' };
       budgetOn.value = !!s.budget_tokens; budgetM.value = s.budget_tokens ? String(s.budget_tokens / 1e6) : '';
     }
+    // Not chosen, the 月报 folder is the archive folder's 月报 and moves with it.
+    const reportsShown = computed(() => !g.value ? '' : g.value.follow ? (g.value.archive_root ? g.value.archive_root.replace(/[\\/]+$/, '') + '\\月报' : '') : g.value.reports_root);
+    async function pickReports() { const p = await pickFolder(reportsShown.value || g.value.archive_root); if (p) { g.value.reports_root = p; g.value.follow = false; } }
     async function saveGeneral() {
-      const body = { ...g.value };
+      const { follow, ...body } = g.value;
+      body.reports_root = follow ? '' : body.reports_root;
       if (budgetOn.value) {
         const v = parseFloat(budgetM.value);
         if (!(v > 0)) return toast('预算请填写大于 0 的数字（单位：百万 token）', 'warn');
@@ -576,7 +584,7 @@ MRPages.settings = {
       if (t === 'diagnostics') loadDiag();
     }, { immediate: true });
     return { tab, m, dlg, probes, g, adv, budgetOn, budgetM, diag, allProbes, probing, store, NEEDS, ADVANCED,
-             setStage, setSwitch, setFallback, setFallbackOn, probe, delProvider, delModel, moveModel, usedBy, keyText, priceText, loadGeneral, saveGeneral, defaultOf,
+             setStage, setSwitch, setFallback, setFallbackOn, probe, delProvider, delModel, moveModel, usedBy, keyText, priceText, loadGeneral, saveGeneral, reportsShown, pickReports, defaultOf,
              loadAdvanced, saveAdvanced, pick, pickExe, canPick, canSave, ZOOMS, zoom, setZoom, probeAll, openPath, openDir, go,
              cfg, exportPath, importPath, busy, pl, plPath, plEdit, pluginChanged, pickPlugin, pickPluginFolder, installPlugin, setPluginOn, savePlugin, runPluginAction, uninstallPlugin, pickExport, pickImport, doExport, doImport, x, loadExternal, saveExternal, pickExternal };
   },

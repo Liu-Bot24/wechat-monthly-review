@@ -15,7 +15,8 @@ from pathlib import Path
 from . import FROZEN, ROOT, config
 from .progress import read as read_progress
 
-KINDS = {'run': '生成月报', 'plan': '估算', 'asr': '语音转写', 'topic-plan': '专题预览', 'topic-screen': '专题筛查', 'topic-run': '生成专题', 'plugin': '插件任务'}
+KINDS = {'run': '生成月报', 'plan': '估算', 'asr': '语音转写', 'topic-plan': '专题预览', 'topic-screen': '专题筛查', 'topic-run': '生成专题', 'plugin': '插件任务',
+         'layout': '整理月报文件夹'}
 # A 专题 job's month is "专题/<id>", so its lock, progress and log sit in the 专题's own folder.
 TOPIC_KINDS = ('topic-plan', 'topic-screen', 'topic-run')
 FINAL = ('done', 'done-with-problems', 'budget-stop', 'external-wait', 'failed', 'stopped')
@@ -123,7 +124,12 @@ def _mr():
 def _plugin_dir(job):
     return config.HOME / '插件' / job['plugin']
 
+def _layout_dir():
+    return config.HOME / '整理'
+
 def progress_path(output_root, job):
+    if job['kind'] == 'layout':          # moves the material folder itself: its log stays in the configuration
+        return _layout_dir() / 'progress.json'
     if job['kind'] == 'plugin':          # a plugin's action writes no progress; its end is its exit code
         return _plugin_dir(job) / 'progress.json'
     if job['kind'] == 'asr':
@@ -132,6 +138,8 @@ def progress_path(output_root, job):
     return Path(output_root) / job['month'] / ('plan-progress.json' if job['kind'] in ('plan', 'topic-plan') else 'progress.json')
 
 def log_path(output_root, job):
+    if job['kind'] == 'layout':
+        return _layout_dir() / 'run.log'
     if job['kind'] == 'plugin':
         return _plugin_dir(job) / 'run.log'
     if job['kind'] == 'asr':
@@ -151,6 +159,8 @@ def command(job):
         return ['plan', job['month']] + hand_out
     if job['kind'] == 'plugin':
         return ['plugin', job['plugin'], job['action']]
+    if job['kind'] == 'layout':
+        return ['layout', 'arrange']
     args = ['asr', '--from', job['from'], '--to', job['to']]
     for chat in job.get('chats') or []:
         args += ['--chat', chat]
@@ -232,6 +242,8 @@ class Jobs:
                     job['month'] = 'asr'
                 if j['kind'] == 'plugin':
                     job['month'] = f'插件/{j["plugin"]}/{j["action"]}'
+                if j['kind'] == 'layout':
+                    job['month'] = '整理'
                 self.data['queue'].append(job)
                 added.append(job)
             self._save()
@@ -257,6 +269,11 @@ class Jobs:
         """Whether a job that calls models is running or waiting: one added now that calls them would wait for it."""
         with self.lock:
             return bool(self.data['current']) or any(j['kind'] not in LIGHT and not j.get('paused') for j in self.data['queue'])
+
+    def has(self, kind):
+        """Whether a job of this kind is running or waiting."""
+        with self.lock:
+            return any((self.data[lane] or {}).get('kind') == kind for lane in LANES) or any(j['kind'] == kind for j in self.data['queue'])
 
     def pause(self, job_id):
         """A running job ends like a stop (its answered calls are cached) and goes back to the head of the queue, paused;
@@ -362,7 +379,7 @@ class Jobs:
             state = 'paused'            # one that ended by itself just before keeps its own end
         elif job['kind'] == 'plan':
             state = 'done' if code in (0, None) and (Path(root) / job['month'] / 'plan.json').exists() else 'failed'
-        elif job['kind'] == 'plugin':
+        elif job['kind'] in ('plugin', 'layout'):
             state = 'done' if code == 0 else 'failed'
         elif state not in FINAL:
             state = 'failed'
@@ -378,6 +395,9 @@ class Jobs:
             path = progress_path(root, job)
             path.with_suffix('.tmp').write_text(json.dumps(prog, ensure_ascii=False), encoding='utf-8')
             path.with_suffix('.tmp').replace(path)
+        if job['kind'] == 'layout' and code == 0:
+            # Arranging pointed the paths in this file's history at the moved folder; keep that, not the copy held here.
+            self.data['history'] = self._load()['history']
         record = {k: job.get(k) for k in ('id', 'kind', 'month', 'budget', 'api_only', 'hand_out', 'from', 'to', 'chats', 'topic', 'title', 'plugin', 'action', 'started', 'log')}
         record.update(ended=time.time(), state=state, message=message[:600], tokens=prog.get('tokens'), calls=prog.get('calls'),
                       report=prog.get('report'))
@@ -392,6 +412,7 @@ class Jobs:
         if config.load_settings().get('notify') and job['kind'] not in ('plan', 'topic-plan') and state not in ('stopped', 'paused'):
             what = (f'{job["month"]} 月报' if job['kind'] == 'run' else '语音转写' if job['kind'] == 'asr'
                     else f'插件「{job.get("title") or job.get("plugin")}」' if job['kind'] == 'plugin'
+                    else '整理月报文件夹' if job['kind'] == 'layout'
                     else f'专题「{job.get("title") or job.get("topic")}」' + ('筛查' if job['kind'] == 'topic-screen' else ''))
             title = {'done': f'{what}已完成', 'done-with-problems': f'{what}有部分失败', 'budget-stop': f'{what}：已到预算上限，暂停',
                      'external-wait': f'{what}：等待外部 Agent',

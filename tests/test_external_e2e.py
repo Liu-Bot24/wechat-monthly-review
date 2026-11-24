@@ -201,11 +201,11 @@ class ExternalEndToEndTest(unittest.TestCase):
 
     def settings(self, out, **more):
         """Settings as the window keeps them, so the command line and the server find the same folders."""
-        s = {**config.load_settings(), 'archive_root': str(self.archive), 'output_root': str(self.tmp.name + '/' + out),
-             'asr': False, 'vision': False, 'notify': False, **more}
-        config._write(config.settings_path(), s)
+        stored = {k: v for k, v in {**config.load_settings(), 'archive_root': str(self.archive), 'reports_root': str(self.tmp.name + '/' + out),
+                                    'asr': False, 'vision': False, 'notify': False, **more}.items() if k in config.DEFAULTS}
+        config._write(config.settings_path(), stored)
         config._save_models(self.models)
-        return s
+        return config.load_settings()
 
     def run_once(self, s):
         pipe = Pipeline(ROOT, MONTH, s, self.models)
@@ -239,7 +239,7 @@ class ExternalEndToEndTest(unittest.TestCase):
         root = str(external.root(s))
         queued = []
         check = lambda: main(['check', root, '--wait', '0'])
-        fake = mock.Mock(add=lambda items: queued.extend(items) or items, busy=lambda: False)
+        fake = mock.Mock(add=lambda items: queued.extend(items) or items, busy=lambda: False, has=lambda kind: False)
         with mock.patch('builtins.print'), mock.patch.object(server, 'jobs', fake), mock.patch.object(server, '_resumed', {}):
             self.assertEqual(check(), 0)                         # the agent was started before anything: nothing to do, nothing coming
             self.assertEqual(self.run_once(s)[0], 4)             # the month stops where the first results are missing

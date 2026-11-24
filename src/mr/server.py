@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from . import PROGRAM, ROOT, __version__, config, external, plugins, receipts, source, voice
+from . import PROGRAM, ROOT, __version__, config, external, layout, plugins, receipts, source, voice
 from .archive import Archive, TZ, ancestors, location_problem, media_id, media_kind, media_path, month_bounds, stamp
 from . import topic
 from .jobs import LANES, TOPIC_KINDS, Jobs, _mr, lock_holder
@@ -135,7 +135,7 @@ def safe_path(path):
     """Only files under the archive, the output folder or the user config may be opened or served."""
     s = config.load_settings()
     p = Path(path).resolve()
-    for base in (s['archive_root'], s['output_root'], config.HOME, s.get('external_root')):
+    for base in (s['archive_root'], s['reports_root'], s['output_root'], config.HOME, s.get('external_root')):
         if not base:                          # an unset folder would resolve to the working directory
             continue
         try:
@@ -143,7 +143,7 @@ def safe_path(path):
             return p
         except ValueError:
             continue
-    fail(403, '只能打开归档、月报输出目录、交接文件夹和程序配置中的文件')
+    fail(403, '只能打开归档、月报文件夹、交接文件夹和程序配置中的文件')
 
 
 # ---------- page ----------
@@ -223,8 +223,9 @@ def accept_source(month: str):
 def _settle(run_dir, month):
     """Fix a result an older version left with 校验提示 (see pipeline.settle), unless a run holds it now."""
     try:
-        if not lock_holder(config.load_settings()['output_root'], month):
-            settle(run_dir)
+        s = config.load_settings()
+        if not lock_holder(s['output_root'], month) and settle(run_dir) and layout.MONTH.match(month):
+            layout.publish(s, month)          # the copy in 正式月报 follows the fixed working copy
     except OSError as e:
         print(f'整理 {month} 的校验提示时出错：{e}', file=sys.stderr)
 
@@ -353,6 +354,9 @@ def delete_month(month: str, cache: int = 0):
     items = [p for p in run_dir.iterdir() if p.name not in keep]
     if _checks_path(month).exists():
         items.append(_checks_path(month))
+    final = layout.published(s, month)
+    if final and final.exists():
+        items.append(final)
     try:
         recycle(items)
     except OSError as e:
@@ -405,6 +409,8 @@ _resumed = {}       # month -> the results it was last continued for, so that on
 def _resume_waiting():
     """A month or 专题 that stopped to wait for an external agent goes on by itself once every result is in."""
     s = config.load_settings()
+    if not s['output_root'] or _arranging():
+        return
     out = Path(s['output_root'])
     for status in list(out.glob('[0-9][0-9][0-9][0-9]-[0-9][0-9]/status.json')) + list(topic.root_dir(s).glob('*/status.json')):
         d = status.parent
@@ -437,6 +443,10 @@ def add_jobs(body: dict = Body(...)):
     another job first gets an estimate beside it that writes the agent's first tasks now (Jobs.LIGHT)."""
     items = body.get('jobs') or []
     handed = config.load_settings().get('external_stages') or []
+    if _arranging():
+        fail(409, '正在整理月报文件夹，结束后再添加任务')
+    if any(j.get('kind') == 'layout' for j in items):
+        fail(400, '整理月报文件夹请用设置里的按钮')
     for j in items:
         if j.get('kind') == 'plugin':
             name, action = j.get('plugin'), j.get('action')
@@ -487,13 +497,50 @@ def add_jobs(body: dict = Body(...)):
                              {'kind': 'topic-plan', 'topic': j['topic'], 'month': j['month'], 'title': j['title'], 'hand_out': True})
     return {'added': jobs.add(first + items)}
 
+def _arranging():
+    return jobs.has('layout')
+
+def _keep_arranging(job_id=None):
+    """Arranging moves the whole material folder: it is not stopped halfway."""
+    snap = jobs.snapshot()
+    cur = next((snap[lane] for lane in LANES if snap[lane] and snap[lane]['id'] == job_id), None) if job_id else snap['current']
+    if cur and cur.get('kind') == 'layout':
+        fail(409, '整理月报文件夹不能中途停止，请等它完成')
+
+# ---------- the 月报 folder's layout (layout.py) ----------
+@app.get('/api/layout')
+def layout_state():
+    s = config.load_settings()
+    return {**layout.state(s), 'reports_root': s['reports_root'], 'material': s['output_root'],
+            'final': str(config.final_dir(s) or ''), 'arranging': _arranging()}
+
+@app.post('/api/layout/arrange')
+def layout_arrange():
+    s = config.load_settings()
+    st = layout.state(s)
+    if not st['legacy']:
+        fail(409, '没有需要整理的旧版月报材料')
+    if st['problem']:
+        fail(409, st['problem'])
+    snap = jobs.snapshot()
+    if any(snap[lane] for lane in LANES) or snap['queue']:
+        fail(409, '有任务正在运行或排队。等它们结束（或清空队列）后再整理。')
+    return {'added': jobs.add([{'kind': 'layout', 'title': '整理月报文件夹'}])}
+
+@app.post('/api/layout/dismiss')
+def layout_dismiss():
+    layout.dismiss()
+    return layout_state()
+
 @app.post('/api/jobs/stop')
 def stop_jobs(body: dict = Body(default={})):
+    _keep_arranging(body.get('id'))
     jobs.stop(bool(body.get('clear_queue')), body.get('id'))
     return jobs.snapshot()
 
 @app.post('/api/jobs/{job_id}/pause')
 def pause_job(job_id: str):
+    _keep_arranging(job_id)
     jobs.pause(job_id)
     return jobs.snapshot()
 
@@ -524,24 +571,37 @@ def job_log(path: str, lines: int = 400):
 # ---------- reports ----------
 @app.get('/api/reports')
 def reports():
-    root = Path(config.load_settings()['output_root'])
+    s = config.load_settings()
     out = []
+    if not s['output_root']:
+        return {'reports': out}
+    root = Path(s['output_root'])
     for f in sorted(root.glob('*/月报_*.md'), reverse=True):
         if re.match(r'^\d{4}-\d{2}$', f.parent.name) and f.name == f'月报_{f.parent.name}.md':
             st = read_json(f.parent / 'status.json') or {}
-            out.append({'month': f.parent.name, 'path': str(f), 'state': st.get('state'), 'tokens': st.get('tokens_used'),
+            shown = _shown_report(s, f.parent.name) or f
+            out.append({'month': f.parent.name, 'path': str(shown), 'state': st.get('state'), 'tokens': st.get('tokens_used'),
                         'modified': f.stat().st_mtime})
     return {'reports': out}
 
 def _checks_path(month):
     return config.HOME / '勾选' / f'{month}.json'
 
+def _shown_report(s, month):
+    """The copy in 正式月报 when there is one: the one the window shows and opens, its links starting from there."""
+    final = layout.published(s, month)
+    return final if final and final.exists() else None
+
 @app.get('/api/reports/{month}')
 def report(month: str):
-    f = Path(config.load_settings()['output_root']) / month / f'月报_{month}.md'
+    s = config.load_settings()
+    if not s['output_root'] or not re.match(r'^\d{4}-\d{2}$', month):
+        fail(404, f'{month} 还没有月报')
+    f = Path(s['output_root']) / month / f'月报_{month}.md'
     if not f.exists():
         fail(404, f'{month} 还没有月报')
-    return {'month': month, 'path': str(f), 'markdown': f.read_text(encoding='utf-8'),
+    shown = _shown_report(s, month) or f
+    return {'month': month, 'path': str(shown), 'markdown': shown.read_text(encoding='utf-8'),
             'checks': read_json(_checks_path(month)) or {}, 'status': read_json(f.parent / 'status.json')}
 
 @app.put('/api/reports/{month}/checks')
@@ -601,6 +661,8 @@ def _topic_job(topic_id):
 
 @app.get('/api/topics')
 def topics():
+    if not config.load_settings()['output_root']:
+        return {'topics': []}
     base = topic.root_dir(config.load_settings())
     for d in base.glob('*/status.json') if base.exists() else []:
         _settle(d.parent, f'专题/{d.parent.name}')
@@ -1024,7 +1086,8 @@ def voice_list(first: str, last: str, chat: str = '', offset: int = 0, limit: in
 
 @app.get('/api/voice/progress')
 def voice_progress():
-    return {'progress': read_json(Path(config.load_settings()['output_root']) / '语音转写' / 'progress.json')}
+    out = config.load_settings()['output_root']
+    return {'progress': read_json(Path(out) / '语音转写' / 'progress.json') if out else None}
 
 @app.get('/api/voice/service')
 def voice_service():
@@ -1050,8 +1113,8 @@ def usage():
     s, m = config.load_settings(), config.load_models()
     rows, titles, states, hidden = [], {}, {}, {}
     since, shown = s.get('usage_since') or 0, set(s.get('usage_shown') or [])
-    out_root = Path(s['output_root'])
-    for f in list(out_root.glob('[0-9][0-9][0-9][0-9]-[0-9][0-9]/receipts.jsonl')) + list(topic.root_dir(s).glob('*/receipts.jsonl')):
+    out_root = Path(s['output_root'] or '//nothing')
+    for f in [] if not s['output_root'] else list(out_root.glob('[0-9][0-9][0-9][0-9]-[0-9][0-9]/receipts.jsonl')) + list(topic.root_dir(s).glob('*/receipts.jsonl')):
         if f.parent.parent == topic.root_dir(s):
             month = f'专题/{f.parent.name}'
             try:
@@ -1115,11 +1178,9 @@ def get_settings():
 def put_settings(body: dict = Body(...)):
     if body.get('archive_root') and not Path(body['archive_root']).is_dir():
         fail(400, f'归档目录不存在：{body["archive_root"]}')
-    if 'output_root' in body:
-        try:
-            Path(body['output_root']).mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            fail(400, f'无法使用输出目录：{e}')
+    root = str(body.get('reports_root') or '').strip()
+    if root and (not Path(root).is_absolute() or Path(root).is_file()):
+        fail(400, f'月报文件夹应是一个文件夹的完整路径：{root}')
     if body.get('markdown_viewer') and not Path(body['markdown_viewer']).exists():
         fail(400, '找不到这个 Markdown 查看器程序')
     if body.get('external_root'):
@@ -1322,7 +1383,7 @@ def plugin_uninstall(name: str, body: dict = Body(default={})):
 @app.get('/api/diagnostics')
 def diagnostics():
     s = config.load_settings()
-    out = {'version': __version__, 'home': str(config.HOME), 'program': str(PROGRAM), 'output_root': s['output_root'],
+    out = {'version': __version__, 'home': str(config.HOME), 'program': str(PROGRAM), 'reports_root': s['reports_root'], 'output_root': s['output_root'],
            'archive_root': s['archive_root'], 'python': sys.version.split()[0]}
     problem = location_problem(s['archive_root'])
     out['archive'] = {'ok': problem is None, 'path': s['archive_root'], 'problem': problem}

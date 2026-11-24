@@ -1,6 +1,6 @@
 /* 总览: pick a month (or a range) to estimate or generate, and the months that already have something. */
 MRPages.overview = {
-  components: { Icon, Bar, SourceModal },
+  components: { Icon, Bar, SourceModal, LayoutBanner },
   template: `
 <div class="page">
   <div class="page-head">
@@ -9,6 +9,7 @@ MRPages.overview = {
     <span class="spacer"></span>
     <button class="btn" @click="refresh"><Icon name="refresh"/>刷新</button>
   </div>
+  <LayoutBanner/>
   <div class="banner warn" v-if="o && o.missing_stages.length">
     <Icon name="warn"/><div class="grow">这些环节还没有选择模型：{{ o.missing_stages.join('、') }}。生成月报之前，请先在设置中选择。</div>
     <a class="btn sm" href="#/settings/models">去设置</a>

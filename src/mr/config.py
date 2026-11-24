@@ -96,7 +96,8 @@ KEY_TYPES = ('none', 'credential')
 
 DEFAULTS = {
     'archive_root': '',                    # chosen on first use; there is no place an archive is found by default
-    'output_root': str(Path.home() / '聊天记录月报'),   # not Documents: OneDrive often syncs it, and reports quote private chats
+    'reports_root': '',                    # the 月报 folder; empty = 月报 inside the archive folder (follows it until set)
+    'legacy_output_root': '',              # an older version's material folder still to be arranged (layout.py); '-' = none
     'budget_tokens': None,                 # per month; None means no cap
     'concurrency': 6,
     'notify': True,
@@ -169,15 +170,70 @@ def _merge(base, over):
 def settings_path():
     return HOME / 'settings.json'
 
+# The 月报 folder holds three folders of fixed names: the finished reports, everything a run keeps (what the output
+# folder held before 1.4.0, one level down), and the default place of the 月度索引 plugin.
+FINAL, MATERIAL, INDEX = '正式月报', '原始材料', '月度索引'
+OLD_DEFAULT_OUTPUT = Path.home() / '聊天记录月报'       # the output folder before 1.4.0, when it was never changed
+
+def default_reports_root(archive_root):
+    return str(Path(archive_root) / '月报') if str(archive_root or '').strip() else ''
+
+def _normalize(stored):
+    """Settings as an older version wrote them: its output folder becomes the folder still to be arranged."""
+    stored = dict(stored)
+    old = stored.pop('output_root', None)
+    if old and not stored.get('legacy_output_root'):
+        stored['legacy_output_root'] = old
+    return stored
+
 def load_settings():
-    return _merge(DEFAULTS, _read(settings_path(), {}))
+    """The stored settings over DEFAULTS, with the folders worked out: reports_root (the 月报 folder), and output_root,
+    its 原始材料 folder, where everything a run reads and writes lives; empty while there is no archive folder."""
+    stored = _normalize(_read(settings_path(), {}))
+    s = _merge(DEFAULTS, stored)
+    return with_folders(s, custom=bool(str(stored.get('reports_root') or '').strip()))
+
+def with_folders(s, custom=None):
+    s = dict(s)
+    root = str(s.get('reports_root') or '').strip() or default_reports_root(s.get('archive_root'))
+    s['reports_root'] = root
+    s['reports_root_custom'] = bool(custom)
+    s['output_root'] = str(Path(root) / MATERIAL) if root else ''
+    return s
+
+def _contains(outer, inner):
+    """Whether inner is outer or inside it (no folder needs to exist)."""
+    if not str(outer or '').strip() or not str(inner or '').strip():
+        return False
+    a, b = os.path.normcase(os.path.abspath(outer)), os.path.normcase(os.path.abspath(inner))
+    return b == a or b.startswith(a.rstrip('\\/') + os.sep)
+
+def reports_root(settings):
+    """The 月报 folder of these settings; one made up by hand with only output_root has it as the parent of that."""
+    root = str(settings.get('reports_root') or '').strip()
+    if root:
+        return Path(root)
+    out = str(settings.get('output_root') or '').strip()
+    return Path(out).parent if out else None
+
+def final_dir(settings):
+    root = reports_root(settings)
+    return root / FINAL if root else None
 
 def save_settings(patch):
     """Merge patch into the stored settings and return the result. Only known keys are accepted."""
     unknown = sorted(set(patch) - set(DEFAULTS))
     if unknown:
         raise ConfigError('不认识的设置项：' + '、'.join(unknown))
-    stored = {k: v for k, v in _merge(_read(settings_path(), {}), patch).items() if k in DEFAULTS}   # settings this version no longer has are dropped
+    patch = dict(patch)
+    if 'reports_root' in patch:
+        root = str(patch['reports_root'] or '').strip()
+        archive = patch.get('archive_root', load_settings()['archive_root'])
+        # The folder the archive gives is no choice of the user's: kept empty, it follows the archive folder.
+        if root and _contains(root, archive):
+            raise ConfigError('月报文件夹不能是归档目录，也不能包含它；可以放在归档目录里面。')
+        patch['reports_root'] = '' if not root or os.path.normcase(os.path.normpath(root)) == os.path.normcase(os.path.normpath(default_reports_root(archive) or '?')) else root
+    stored = {k: v for k, v in _merge(_normalize(_read(settings_path(), {})), patch).items() if k in DEFAULTS}   # settings this version no longer has are dropped
     merged = _merge(DEFAULTS, stored)
     b = merged['budget_tokens']
     if b is not None and (not isinstance(b, int) or b <= 0):
@@ -195,7 +251,7 @@ def save_settings(patch):
     if isinstance(a, bool) or not isinstance(a, int) or not 0 <= a <= 100:
         raise ConfigError('抽查比例应在 0 到 100 之间')
     _write(settings_path(), stored)
-    return merged
+    return with_folders(merged, custom=bool(str(stored.get('reports_root') or '').strip()))
 
 # ---------- carrying the configuration to another installation ----------
 CONFIG_FILES = ('settings.json', 'models.json', '会话选择.json')

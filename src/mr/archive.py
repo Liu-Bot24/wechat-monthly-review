@@ -215,6 +215,13 @@ class Archive:
             self.db.close()
             raise
         self.excluded = set()          # the archive decides what it holds; nothing is excluded here
+        # The 月报 folder may sit inside the archive (its default place): its files are this program's, not chats.
+        self.skip = set()
+        if reports:
+            from . import config
+            for folder in (Path(reports), Path(reports).parent if Path(reports).name == config.MATERIAL else None):
+                if folder is not None:
+                    self.skip.add(os.path.normcase(os.path.abspath(folder)))
         self._files = {}
         self._lock = threading.RLock()
         self.refresh(progress)
@@ -258,6 +265,8 @@ class Archive:
                 sub = f'{rel}/{e.name}' if rel else e.name
                 try:
                     if e.is_dir(follow_symlinks=False):
+                        if self.skip and os.path.normcase(os.path.abspath(e.path)) in self.skip:
+                            continue
                         walk(e.path, sub)
                     elif e.name.lower().endswith('.md'):
                         st = e.stat()

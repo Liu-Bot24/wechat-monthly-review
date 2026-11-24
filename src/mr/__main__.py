@@ -180,6 +180,8 @@ def main(argv=None):
     s = sub.add_parser('select')
     s.add_argument('action', choices=['show', 'exclude', 'include', 'clear', 'skip-category', 'read-category'])
     s.add_argument('targets', nargs='*')
+    s = sub.add_parser('layout', help='the 月报 folder: show it, arrange an older version folder into it, rewrite 正式月报')
+    s.add_argument('action', nargs='?', default='show', choices=['show', 'arrange', 'publish', 'dismiss'])
     s = sub.add_parser('plugin')
     s.add_argument('name', nargs='?')
     s.add_argument('args', nargs=argparse.REMAINDER)
@@ -204,6 +206,32 @@ def main(argv=None):
         return chats(settings, args.month, args.find, args.category, args.state, args.all)
     if args.command == 'select':
         return select(settings, args.action, args.targets)
+    if args.command == 'layout':
+        from . import layout
+        if args.action == 'arrange':
+            return layout.arrange(settings, print)
+        if args.action == 'publish':
+            if not settings['output_root']:
+                print('还没有设置归档目录，月报文件夹无从确定。')
+                return 2
+            layout.publish_all(settings, print)
+            return 0
+        if args.action == 'dismiss':
+            layout.dismiss()
+            print('以后不再提示整理旧版的月报文件夹。')
+            return 0
+        st = layout.state(settings)
+        print(f'月报文件夹：{settings["reports_root"] or "（还没有设置归档目录）"}')
+        if settings['reports_root']:
+            print(f'  {config.FINAL}：{config.final_dir(settings)}')
+            print(f'  {config.MATERIAL}：{settings["output_root"]}')
+        if st['legacy']:
+            print(f'旧版的月报材料：{st["legacy"]}（{st["months"]} 个月）')
+            print(f'不能整理：{st["problem"]}' if st['problem'] else '用 mr layout arrange 整理成新结构')
+        return 0
+    if args.command in ('plan', 'run', 'status', 'topic', 'asr') and not settings['output_root']:
+        print('还没有设置归档目录：请在 设置 › 常规 中选择。')
+        return 2
     if args.command == 'plugin':
         from . import plugins
         if not args.name:

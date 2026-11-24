@@ -1,6 +1,6 @@
 """Make a plugin package (.zip) from a plugin folder under plugins/: what 设置 › 插件 installs.
 
-  python tools/package_plugin.py plugins/素材索引 [dest folder]   ->  <dest>/<name>-<version>.zip (default dest: dist/)
+  python tools/package_plugin.py plugins/月度索引 [dest folder]   ->  <dest>/<name>-<version>.zip (default dest: dist/)
 
 The package holds the folder under the plugin's name, without its tests, caches or stored settings.
 """

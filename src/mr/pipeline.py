@@ -1164,6 +1164,8 @@ class Pipeline:
         tmp = path.with_suffix('.tmp')
         tmp.write_text(report, encoding='utf-8')
         tmp.replace(path)
+        from . import layout
+        final = layout.publish(self.settings, self.month)        # the copy in 正式月报, its links starting from there
         with (self.run_dir / 'cards.jsonl').open('w', encoding='utf-8') as f:
             for cs in self.cards.values():
                 for c in cs:
@@ -1184,7 +1186,7 @@ class Pipeline:
         summary = f'月报已生成：用掉 {models.used:,} token' + (f'；{len(failures)} 块失败' if failures else '')
         progress.state['report'] = str(path)
         progress.finish(state, summary)
-        print(f'\n月报：{path}\n消耗 {models.used:,} token；失败 {len(failures)} 块')
+        print(f'\n月报：{final or path}\n消耗 {models.used:,} token；失败 {len(failures)} 块')
         for stage, u in usage.items():
             print(f'  {stage:17} {u["model"]:15} {u["calls"]:5} 次  输入 {u["in"]:>11,}  输出 {u["out"]:>9,}  {u["seconds"] / 60:6.1f} 分钟（累计）')
         from . import plugins

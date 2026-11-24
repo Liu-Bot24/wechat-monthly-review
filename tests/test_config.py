@@ -145,7 +145,7 @@ class BundleTest(unittest.TestCase):
 
     def test_no_folder_of_this_machine_is_a_default(self):
         self.assertEqual(config.DEFAULTS['archive_root'], '')
-        self.assertEqual(Path(config.DEFAULTS['output_root']).parent, Path.home())
+        self.assertEqual(config.DEFAULTS['reports_root'], '')               # the 月报 folder follows the archive folder
 
     def test_models_keep_the_users_order(self):
         d = {'base_url': 'https://x/v1', 'api': 'chat', 'key': {'type': 'none'}}

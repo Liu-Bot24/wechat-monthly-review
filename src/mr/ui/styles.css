@@ -107,6 +107,8 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 .card.pad { padding: 14px 16px; }
 .card-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .card-head h2, .card-head h3 { font-size: 14px; }
+/* a head inside a padded card already has the card's padding: line it up with the content below */
+.card.pad > .card-head { padding: 0 0 12px; margin-bottom: 12px; }
 .card-body { padding: 14px 16px; }
 .grid { display: grid; gap: 14px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 14px; }

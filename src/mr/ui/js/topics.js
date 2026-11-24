@@ -68,7 +68,7 @@ MRPages.topics = {
       <div v-if="!id && !listed" class="empty"><span class="spinner"></span></div>
       <div v-else-if="!id" class="empty" style="margin-top:12vh;line-height:2">
         <div style="font-size:16px;font-weight:600;color:var(--text)">单独总结一段聊天</div>
-        <div>任选会话、人、时间和话题，按你要的视角和模板写成一份总结。<br>结果放在输出目录的"专题"文件夹里，和月报分开。</div>
+        <div>任选会话、人、时间和话题，按你要的视角和模板写成一份总结。<br>结果放在原始材料文件夹的"专题"文件夹里，和月报分开。</div>
         <button class="btn primary" style="margin-top:12px" @click="create"><Icon name="plus"/>新建专题</button>
       </div>
       <div v-else-if="!detail" class="empty"><span class="spinner"></span></div>

@@ -203,12 +203,14 @@ const LogView = {
 
 function jobTitle(j) {
   if (j.kind === 'asr') return `语音转写 ${j.from} 至 ${j.to}`;
+  if (j.kind === 'layout') return '整理月报文件夹';
   if (j.kind.startsWith('topic-')) return `专题「${j.title || '未命名'}」· ${{ 'topic-plan': '预览', 'topic-screen': '模型筛查', 'topic-run': '生成' }[j.kind]}`;
   return `${monthLabel(j.month)} · ${j.kind === 'plan' ? '估算' : '生成月报'}`;
 }
 // Where a job's own page is: the month's 运行 tab, the 专题, or the voice page.
 function goJob(j) {
   if (j.kind === 'asr') go('voice');
+  else if (j.kind === 'layout') go('settings', 'general');
   else if (j.kind.startsWith('topic-')) go('topics', j.month.replace(/^专题\//, ''));
   else go('reports', j.month, { tab: 'run' });
 }
